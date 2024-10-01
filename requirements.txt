@@ -1,0 +1,10 @@
+uvicorn
+fastapi
+pydantic
+pydantic-settings
+opencv-python
+numpy
+matplotlib
+loguru
+pytorch
+torchvision
