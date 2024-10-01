@@ -24,8 +24,12 @@ payload = {
 }
 
 # Send POST request to the API
-response = requests.post(url, json=payload)
-
-# Print the response status code and raw data
-print(response.status_code)
-print(response.json())  # Print JSON response data
+try:
+    response = requests.post(url, json=payload)
+    response.raise_for_status()  # Raises an HTTPError for bad responses
+    print("Status Code:", response.status_code)
+    print("Response JSON:", response.json())
+except requests.exceptions.RequestException as e:
+    print("Error occurred:", str(e))
+    if response is not None:
+        print("Response content:", response.text)

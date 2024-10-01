@@ -1,18 +1,15 @@
 import uvicorn
-from fastapi import FastAPI
+from fastapi import FastAPI, HTTPException
 import datetime
 import time
 from model import predict
 from loguru import logger
 from pydantic import BaseModel
 from typing import List
-from utils import load_sample
 
 HOST = "0.0.0.0"
 PORT = 4321
 
-# Images are loaded via cv2, encoded via base64 and sent as strings
-# See utils.py for details
 class CellClassificationPredictRequestDto(BaseModel):
     cell: str
 
@@ -35,21 +32,20 @@ def index():
 
 @app.post('/predict', response_model=CellClassificationPredictResponseDto)
 def predict_endpoint(request: CellClassificationPredictRequestDto):
-
-    # Decode request
-    image_id = load_sample(request.cell)
-
-    predicted_homogenous_state = predict(image_id)
-    
-    # Return the encoded image to the validation/evalution service
-    response = CellClassificationPredictResponseDto(
-        is_homogenous=predicted_homogenous_state
-    )
-    
-    return response
+    try:
+        predicted_homogenous_state = predict(request.cell)
+        if predicted_homogenous_state == -1:
+            raise HTTPException(status_code=500, detail="Prediction error")
+        
+        response = CellClassificationPredictResponseDto(
+            is_homogenous=predicted_homogenous_state
+        )
+        return response
+    except Exception as e:
+        logger.error(f"Error in predict_endpoint: {str(e)}")
+        raise HTTPException(status_code=500, detail="Internal server error")
 
 if __name__ == '__main__':
-
     uvicorn.run(
         'api:app',
         host=HOST,

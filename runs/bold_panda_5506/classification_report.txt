@@ -1,0 +1,11 @@
+Classification Report:
+               precision    recall  f1-score   support
+
+Heterogeneous       0.82      1.00      0.90        23
+  Homogeneous       0.00      0.00      0.00         5
+
+     accuracy                           0.82        28
+    macro avg       0.41      0.50      0.45        28
+ weighted avg       0.67      0.82      0.74        28
+
+Final Custom Score: 0.0000
