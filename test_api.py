@@ -28,5 +28,4 @@ response = requests.post(url, json=payload)
 
 # Print the response status code and raw data
 print(response.status_code)
-print(response.text)  # Print raw response data
 print(response.json())  # Print JSON response data
