@@ -35,11 +35,13 @@ def predict_endpoint(request: CellClassificationPredictRequestDto):
     try:
         predicted_homogenous_state = predict(request.cell)
         if predicted_homogenous_state == -1:
+            logger.error("Prediction returned error code -1")
             raise HTTPException(status_code=500, detail="Prediction error")
         
         response = CellClassificationPredictResponseDto(
             is_homogenous=predicted_homogenous_state
         )
+        logger.info(f"Successful prediction: {predicted_homogenous_state}")
         return response
     except Exception as e:
         logger.error(f"Error in predict_endpoint: {str(e)}")

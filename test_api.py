@@ -7,7 +7,7 @@ import cv2
 url = "http://localhost:4321/predict"
 
 # Path to a sample image
-image_path = "data/training/007.tif"
+image_path = "data/training/085.tif"
 
 # Load and encode the image
 image = tif_to_ndarray(image_path)
