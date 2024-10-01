@@ -7,7 +7,7 @@ import cv2
 url = "http://localhost:4321/predict"
 
 # Path to a sample image
-image_path = "data/training/085.tif"
+image_path = "data/training/113.tif"
 
 # Load and encode the image
 image = tif_to_ndarray(image_path)
@@ -16,7 +16,7 @@ img_str = base64.b64encode(buffer).decode('utf-8')
 
 # Print the first 50 characters of the base64 encoded string
 print("Base64 Encoded Image String (first 50 chars):")
-print(img_str[:50])  # Print only the first 50 characters
+print(img_str[:200])  # Print only the first 50 characters
 
 # Prepare the request payload
 payload = {
