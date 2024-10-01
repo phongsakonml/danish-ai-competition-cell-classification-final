@@ -15,8 +15,8 @@ def get_resnet18(num_classes=2):
 
 # Load the trained model
 model = get_resnet18()
-run_dir = 'runs/zany_eagle_1409'  # Update this with your actual run name
-model_path = os.path.join(run_dir, 'zany_eagle_1409_model.pth')
+run_dir = 'runs/bold_panda_5506'  
+model_path = os.path.join(run_dir, 'best_model.pth')
 model.load_state_dict(torch.load(model_path, map_location=torch.device('cpu')))
 model.eval()
 
