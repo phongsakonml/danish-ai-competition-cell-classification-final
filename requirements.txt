@@ -6,5 +6,7 @@ opencv-python
 numpy
 matplotlib
 loguru
-pytorch
 torchvision
+torch
+requests
+cv
