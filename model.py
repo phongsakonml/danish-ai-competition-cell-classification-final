@@ -7,21 +7,19 @@ import base64
 import os
 import random
 import utils
+
 def get_resnet34(num_classes=2):
     model = models.resnet34(weights=models.ResNet34_Weights.DEFAULT)
     model.conv1 = nn.Conv2d(1, 64, kernel_size=7, stride=2, padding=3, bias=False)
     num_ftrs = model.fc.in_features
-    model.fc = nn.Sequential(
-        nn.Dropout(0.5),
-        nn.Linear(num_ftrs, num_classes)
-    )
+    model.fc = nn.Linear(num_ftrs, num_classes)  # Change this line
     return model
 
 # Load the trained model
 model = get_resnet34()
-run_dir = 'runs/resnet34_balanced_20241002_115106'  # Update this path
+run_dir = 'runs/resnet34_balanced_20241002_115106'  # Make sure this path is correct
 model_path = os.path.join(run_dir, 'best_model.pth')
-model.load_state_dict(torch.load(model_path, map_location=torch.device('cpu')))
+model.load_state_dict(torch.load(model_path, map_location=torch.device('cpu'), weights_only=True))
 model.eval()
 
 # Update the transform to match the training script
