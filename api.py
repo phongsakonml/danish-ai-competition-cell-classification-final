@@ -8,7 +8,7 @@ from pydantic import BaseModel
 from typing import List
 
 HOST = "0.0.0.0"
-PORT = 4321
+PORT = 8080 
 
 class CellClassificationPredictRequestDto(BaseModel):
     cell: str

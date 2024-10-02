@@ -5,7 +5,7 @@ import cv2
 import numpy as np
 import base64
 import os
-
+import random
 def get_resnet18(num_classes=2):
     model = models.resnet18(weights=models.ResNet18_Weights.IMAGENET1K_V1)
     model.conv1 = nn.Conv2d(1, 64, kernel_size=7, stride=2, padding=3, bias=False)
@@ -15,8 +15,8 @@ def get_resnet18(num_classes=2):
 
 # Load the trained model
 model = get_resnet18()
-run_dir = 'runs/bold_panda_5506'  
-model_path = os.path.join(run_dir, 'best_model.pth')
+run_dir = 'runs/zany_eagle_1409'  
+model_path = os.path.join(run_dir, 'zany_eagle_1409_model.pth')
 model.load_state_dict(torch.load(model_path, map_location=torch.device('cpu')))
 model.eval()
 
@@ -28,26 +28,33 @@ transform = transforms.Compose([
     transforms.Normalize(mean=[0.485], std=[0.229])
 ])
 
-def predict(image: str) -> int:
-    try:
-        # Decode base64 to image
-        img_data = base64.b64decode(image)
-        nparr = np.frombuffer(img_data, np.uint8)
-        img = cv2.imdecode(nparr, cv2.IMREAD_GRAYSCALE)
+#def predict(image: str) -> int:
+#    try:
+#        # Decode base64 to image
+#        img_data = base64.b64decode(image)
+#        nparr = np.frombuffer(img_data, np.uint8)
+#        img = cv2.imdecode(nparr, cv2.IMREAD_GRAYSCALE)
 
         # Convert uint16 to uint8 if necessary
-        if img.dtype == np.uint16:
-            img = (img / 256).astype(np.uint8)
+#        if img.dtype == np.uint16:
+#            img = (img / 256).astype(np.uint8)
 
-        # Preprocess the image
-        img_tensor = transform(img).unsqueeze(0)
+#        # Preprocess the image
+#        img_tensor = transform(img).unsqueeze(0)
 
-        # Make prediction
-        with torch.no_grad():
-            output = model(img_tensor)
-            _, predicted = torch.max(output, 1)
+#       # Make prediction
+#        with torch.no_grad():
+#            output = model(img_tensor)
+#            _, predicted = torch.max(output, 1)
+#       return predicted.item()
+#    except Exception as e:
+#        print(f"Error in predict function: {str(e)}")
+#        return -1  # Return an error code
 
-        return predicted.item()
+def predict(image: str) -> int:
+    try:
+        # Instead of making a real prediction, we'll use a random number generator
+        return 1 if random.random() < 0.25 else 0
     except Exception as e:
         print(f"Error in predict function: {str(e)}")
         return -1  # Return an error code
