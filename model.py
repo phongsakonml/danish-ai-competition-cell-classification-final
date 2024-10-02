@@ -37,7 +37,7 @@ def predict(image: str) -> int:
         with torch.no_grad():
             output = model(img_tensor)
             _, predicted = torch.max(output, 1)
-            return predicted.item()
+            return 1 - predicted.item()  # Flip the prediction
     except Exception as e:
         print(f"Error in predict function: {str(e)}")
         return -1
