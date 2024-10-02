@@ -19,7 +19,7 @@ def get_resnet34(num_classes=2):
 
 # Load the trained model
 model = get_resnet34()
-run_dir = 'path/to/your/saved/model'  # Update this path
+run_dir = 'runs/resnet34_balanced_20241002_115106'  # Update this path
 model_path = os.path.join(run_dir, 'best_model.pth')
 model.load_state_dict(torch.load(model_path, map_location=torch.device('cpu')))
 model.eval()
