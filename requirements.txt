@@ -12,3 +12,8 @@ uvicorn
 python-multipart
 pydantic
 loguru
+cv
+tensorboard
+scikit-image
+albumentations
+torch-utils

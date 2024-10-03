@@ -11,11 +11,12 @@ from datetime import datetime
 import json
 from tqdm import tqdm
 from torch.optim import lr_scheduler
-from sklearn.metrics import f1_score, precision_recall_fscore_support, confusion_matrix, balanced_accuracy_score
+from sklearn.metrics import f1_score, precision_recall_fscore_support, confusion_matrix, balanced_accuracy_score, roc_auc_score
 from torch.utils.tensorboard import SummaryWriter
 from torch.utils.data import DataLoader, Dataset
 import albumentations as A
 from albumentations.pytorch import ToTensorV2
+from torch.cuda.amp import GradScaler, autocast
 
 # Load the data
 data_dir = 'data/training_balanced'  # Use the balanced dataset
@@ -165,15 +166,20 @@ def visualize_samples(images, labels, transform=None, num_samples=5):
 # Visualize some samples before and after augmentation
 visualize_samples(images, labels, transform=augment)
 
+# Ensure the model is moved to the GPU when initialized
+model = initialize_model().to(device)
+
 def train_model(model, train_loader, val_loader, criterion, optimizer, scheduler, num_epochs=50, patience=10):
     best_val_loss = float('inf')
     early_stopping_counter = 0
     log = {
         'epochs': [], 'train_losses': [], 'val_losses': [], 'train_accuracies': [], 'val_accuracies': [],
         'train_f1': [], 'val_f1': [], 'train_precision': [], 'val_precision': [],
-        'train_recall': [], 'val_recall': [], 'train_bal_acc': [], 'val_bal_acc': []
+        'train_recall': [], 'val_recall': [], 'train_bal_acc': [], 'val_bal_acc': [],
+        'train_auc': [], 'val_auc': []  # Added AUC metrics
     }
 
+    scaler = GradScaler()  # Initialize the gradient scaler for mixed precision
     for epoch in range(num_epochs):
         model.train()
         train_loss = 0.0
@@ -183,12 +189,13 @@ def train_model(model, train_loader, val_loader, criterion, optimizer, scheduler
         
         for inputs, labels in tqdm(train_loader, desc=f"Epoch {epoch+1}/{num_epochs}", leave=False):
             inputs, labels = inputs.to(device), labels.to(device)
-            
             optimizer.zero_grad()
-            outputs = model(inputs)
-            loss = criterion(outputs, labels)
-            loss.backward()
-            optimizer.step()
+            with autocast():  # Enable mixed precision
+                outputs = model(inputs)
+                loss = criterion(outputs, labels)
+            scaler.scale(loss).backward()  # Scale the loss for backpropagation
+            scaler.step(optimizer)  # Update the weights
+            scaler.update()  # Update the scaler
             
             train_loss += loss.item() * inputs.size(0)
             _, predicted = torch.max(outputs, 1)
@@ -205,6 +212,8 @@ def train_model(model, train_loader, val_loader, criterion, optimizer, scheduler
             train_true_labels, train_predictions, average='weighted'
         )
         train_bal_acc = balanced_accuracy_score(train_true_labels, train_predictions)
+        train_auc = roc_auc_score(train_true_labels, train_predictions)  # Calculate AUC for training
+        log['train_auc'].append(train_auc)
         
         model.eval()
         val_loss = 0.0
@@ -214,7 +223,7 @@ def train_model(model, train_loader, val_loader, criterion, optimizer, scheduler
         
         with torch.no_grad():
             for inputs, labels in tqdm(val_loader, desc="Validation", leave=False):
-                inputs, labels = inputs.to(device), labels.to(device)
+                inputs, labels = inputs.to(device), labels.to(device)  # Move inputs and labels to GPU
                 outputs = model(inputs)
                 loss = criterion(outputs, labels)
                 val_loss += loss.item() * inputs.size(0)
@@ -232,6 +241,8 @@ def train_model(model, train_loader, val_loader, criterion, optimizer, scheduler
             val_true_labels, val_predictions, average='weighted'
         )
         val_bal_acc = balanced_accuracy_score(val_true_labels, val_predictions)
+        val_auc = roc_auc_score(val_true_labels, val_predictions)  # Calculate AUC for validation
+        log['val_auc'].append(val_auc)
         
         # Log metrics
         log['train_losses'].append(train_loss)
@@ -255,7 +266,8 @@ def train_model(model, train_loader, val_loader, criterion, optimizer, scheduler
             ('F1_Score/train', train_f1), ('F1_Score/val', val_f1),
             ('Precision/train', train_precision), ('Precision/val', val_precision),
             ('Recall/train', train_recall), ('Recall/val', val_recall),
-            ('Balanced_Accuracy/train', train_bal_acc), ('Balanced_Accuracy/val', val_bal_acc)
+            ('Balanced_Accuracy/train', train_bal_acc), ('Balanced_Accuracy/val', val_bal_acc),
+            ('AUC/train', train_auc), ('AUC/val', val_auc)
         ]:
             writer.add_scalar(name, value, epoch)
 
@@ -268,6 +280,7 @@ def train_model(model, train_loader, val_loader, criterion, optimizer, scheduler
         print(f"Train Precision: {train_precision:.4f}, Val Precision: {val_precision:.4f}")
         print(f"Train Recall: {train_recall:.4f}, Val Recall: {val_recall:.4f}")
         print(f"Train Balanced Accuracy: {train_bal_acc:.4f}, Val Balanced Accuracy: {val_bal_acc:.4f}")
+        print(f"Train AUC: {train_auc:.4f}, Val AUC: {val_auc:.4f}")
         
         scheduler.step(val_loss)
         
@@ -291,16 +304,17 @@ def train_model(model, train_loader, val_loader, criterion, optimizer, scheduler
     return model
 
 def plot_training_curves(log):
-    plt.figure(figsize=(15, 10))
+    plt.figure(figsize=(15, 12))  # Adjusted figure size for better visibility
     
     metrics = [
         ('Loss', 'losses'), ('Accuracy', 'accuracies'),
         ('F1 Score', 'f1'), ('Precision', 'precision'),
-        ('Recall', 'recall'), ('Balanced Accuracy', 'bal_acc')
+        ('Recall', 'recall'), ('Balanced Accuracy', 'bal_acc'),
+        ('AUC', 'auc')  # Added AUC to the metrics
     ]
     
     for i, (metric_name, metric_key) in enumerate(metrics, 1):
-        plt.subplot(3, 2, i)
+        plt.subplot(4, 2, i)  # Adjusted subplot grid for AUC
         plt.plot(log['epochs'], log[f'train_{metric_key}'], label=f'Train {metric_name}')
         plt.plot(log['epochs'], log[f'val_{metric_key}'], label=f'Validation {metric_name}')
         plt.xlabel('Epochs')

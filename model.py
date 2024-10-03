@@ -11,16 +11,19 @@ import utils
 def get_efficientnet_b0(num_classes=2):
     model = models.efficientnet_b0(weights=models.EfficientNet_B0_Weights.IMAGENET1K_V1)
     model.classifier = nn.Sequential(
-        nn.Linear(in_features=1280, out_features=512),  # Adjusted output features
+        nn.Linear(in_features=1280, out_features=640),  # Adjusted output features to match the saved model
         nn.ReLU(),
         nn.Dropout(0.4),
-        nn.Linear(512, num_classes)  # Adjusted to match the number of classes
+        nn.Linear(640, 320),  # Adjusted to match the saved model
+        nn.ReLU(),
+        nn.Dropout(0.4),
+        nn.Linear(320, num_classes)  # Adjusted to match the number of classes
     )
     return model
 
 # Load the trained model from the specified path
 model = get_efficientnet_b0(num_classes=2)  # Ensure num_classes matches the saved model
-model_path = 'runs/efficientnet_b0_20241003_063914_0/best_model.pth'  # Updated path
+model_path = 'runs/efficientnet_b0_balanced_advanced_20241003_093305_0/best_model.pth'  # Updated path
 model.load_state_dict(torch.load(model_path, map_location=torch.device('cpu')))
 model.eval()
 
