@@ -8,18 +8,24 @@ import os
 import random
 import utils
 
-def get_resnet34(num_classes=2):
-    model = models.resnet34(weights=models.ResNet34_Weights.DEFAULT)
-    model.conv1 = nn.Conv2d(1, 64, kernel_size=7, stride=2, padding=3, bias=False)
-    num_ftrs = model.fc.in_features
-    model.fc = nn.Linear(num_ftrs, num_classes)  # Change this line
+def get_efficientnet_b0(num_classes=2):
+    model = models.efficientnet_b0(weights=models.EfficientNet_B0_Weights.IMAGENET1K_V1)
+    model.classifier = nn.Sequential(
+        nn.Linear(in_features=1280, out_features=640),
+        nn.ReLU(),
+        nn.Dropout(0.4),
+        nn.Linear(640, 320),
+        nn.ReLU(),
+        nn.Dropout(0.4),
+        nn.Linear(320, num_classes)
+    )
     return model
 
 # Load the trained model
-model = get_resnet34()
-run_dir = 'runs/resnet34_balanced_20241002_115106'  # Make sure this path is correct
+model = get_efficientnet_b0()
+run_dir = 'runs/efficientnet_b0_balanced_advanced_20241003_071546_0'  # Make sure this path is correct
 model_path = os.path.join(run_dir, 'best_model.pth')
-model.load_state_dict(torch.load(model_path, map_location=torch.device('cpu'), weights_only=True))
+model.load_state_dict(torch.load(model_path, map_location=torch.device('cpu')))
 model.eval()
 
 # Update the transform to match the training script
@@ -27,7 +33,7 @@ transform = transforms.Compose([
     transforms.ToPILImage(),
     transforms.Resize((224, 224)),
     transforms.ToTensor(),
-    transforms.Normalize(mean=[0.485], std=[0.229])
+    transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])
 ])
 
 def predict(image: str) -> int:
@@ -37,7 +43,7 @@ def predict(image: str) -> int:
         with torch.no_grad():
             output = model(img_tensor)
             _, predicted = torch.max(output, 1)
-            return 1 - predicted.item()  # Flip the prediction
+            return predicted.item() 
     except Exception as e:
         print(f"Error in predict function: {str(e)}")
         return -1
