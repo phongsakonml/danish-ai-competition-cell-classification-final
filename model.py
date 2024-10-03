@@ -36,10 +36,9 @@ transform = transforms.Compose([
     transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])
 ])
 
-def predict(image: str) -> int:
+def predict(image: np.ndarray) -> int:
     try:
-        img = utils.load_sample(image)
-        img_tensor = transform(img).unsqueeze(0)
+        img_tensor = transform(image).unsqueeze(0)
         with torch.no_grad():
             output = model(img_tensor)
             _, predicted = torch.max(output, 1)
