@@ -8,6 +8,9 @@ import os
 import random
 import utils
 
+MODEL_NAME = 'steve'
+MODEL_PATH = f'runs/{MODEL_NAME}/best_model.pth'
+
 def get_efficientnet_b0(num_classes=2):
     model = models.efficientnet_b0(weights=models.EfficientNet_B0_Weights.IMAGENET1K_V1)
     model.classifier = nn.Sequential(
@@ -20,8 +23,7 @@ def get_efficientnet_b0(num_classes=2):
 
 # Load the trained model from the specified path
 model = get_efficientnet_b0(num_classes=2)  # Ensure num_classes matches the saved model
-model_path = 'runs/elon/best_model.pth'  # Updated path
-model.load_state_dict(torch.load(model_path, map_location=torch.device('cpu')))
+model.load_state_dict(torch.load(MODEL_PATH, map_location=torch.device('cpu')))
 model.eval()
 
 # Update the transform to match the training script
