@@ -3,7 +3,7 @@ import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
 from skimage import io, exposure
-from sklearn.model_selection import train_test_split
+from sklearn.model_selection import train_test_split, KFold
 import torch
 import torch.nn as nn
 from torchvision import models
@@ -20,6 +20,7 @@ from albumentations.pytorch import ToTensorV2
 # Load the data
 data_dir = 'data/training_balanced'  # Use the balanced dataset
 labels_file = 'data/training_balanced.csv'
+model_name = "efficientnet_b0_balanced_advanced"
 
 # Read labels
 labels_df = pd.read_csv(labels_file)
@@ -57,13 +58,13 @@ labels = np.array(labels, dtype=int)
 class_distribution = np.bincount(labels)
 print(f"Class distribution: {class_distribution}")
 
-# Data Augmentation (Less Aggressive)
+# Data Augmentation
 augment = A.Compose([
-    A.Resize(224, 224),  # Ensure all images are resized to 224x224
-    A.HorizontalFlip(p=0.3),  # Reduced probability
-    A.VerticalFlip(p=0.3),    # Reduced probability
-    A.Rotate(limit=15, p=0.5),  # Reduced rotation limit
-    A.RandomBrightnessContrast(p=0.1),  # Reduced brightness/contrast adjustment
+    A.Resize(224, 224),
+    A.HorizontalFlip(p=0.5),
+    A.VerticalFlip(p=0.5),
+    A.Rotate(limit=30, p=0.7),
+    A.RandomBrightnessContrast(p=0.2),
     A.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]),
     ToTensorV2()
 ])
@@ -100,19 +101,21 @@ print(f"Using device: {device}")
 def initialize_model():
     model = models.efficientnet_b0(weights=models.EfficientNet_B0_Weights.IMAGENET1K_V1)
     
-    # Freeze all layers initially
     for param in model.parameters():
         param.requires_grad = False
     
-    # Unfreeze the last few layers for fine-tuning
-    for param in model.features[-1].parameters():
+    # Unfreeze more layers for fine-tuning
+    for param in model.features[-3:].parameters():
         param.requires_grad = True
     
     model.classifier = nn.Sequential(
-        nn.Linear(in_features=1280, out_features=512),
+        nn.Linear(in_features=1280, out_features=640),
         nn.ReLU(),
-        nn.Dropout(0.3),
-        nn.Linear(512, 2)
+        nn.Dropout(0.4),
+        nn.Linear(640, 320),
+        nn.ReLU(),
+        nn.Dropout(0.4),
+        nn.Linear(320, 2)
     )
     return model
 
@@ -130,7 +133,6 @@ def get_run_name(model_name, base_dir='runs'):
         except FileExistsError:
             counter += 1
 
-model_name = "efficientnet_b0"
 run_name, run_dir = get_run_name(model_name)
 
 # Create a SummaryWriter for this run
@@ -163,26 +165,13 @@ def visualize_samples(images, labels, transform=None, num_samples=5):
 # Visualize some samples before and after augmentation
 visualize_samples(images, labels, transform=augment)
 
-def train_model(model, train_loader, val_loader, criterion, optimizer, scheduler, num_epochs=100):
+def train_model(model, train_loader, val_loader, criterion, optimizer, scheduler, num_epochs=50, patience=10):
     best_val_loss = float('inf')
-    patience = 10
     early_stopping_counter = 0
-
-    # Log for saving training metrics
     log = {
-        'epochs': [],
-        'train_losses': [],
-        'val_losses': [],
-        'train_accuracies': [],
-        'val_accuracies': [],
-        'train_f1': [],
-        'val_f1': [],
-        'train_precision': [],
-        'val_precision': [],
-        'train_recall': [],
-        'val_recall': [],
-        'train_bal_acc': [],
-        'val_bal_acc': []
+        'epochs': [], 'train_losses': [], 'val_losses': [], 'train_accuracies': [], 'val_accuracies': [],
+        'train_f1': [], 'val_f1': [], 'train_precision': [], 'val_precision': [],
+        'train_recall': [], 'val_recall': [], 'train_bal_acc': [], 'val_bal_acc': []
     }
 
     for epoch in range(num_epochs):
@@ -245,21 +234,6 @@ def train_model(model, train_loader, val_loader, criterion, optimizer, scheduler
         val_bal_acc = balanced_accuracy_score(val_true_labels, val_predictions)
         
         # Log metrics
-        writer.add_scalar('Loss/train', train_loss, epoch)
-        writer.add_scalar('Loss/val', val_loss, epoch)
-        writer.add_scalar('Accuracy/train', train_acc, epoch)
-        writer.add_scalar('Accuracy/val', val_acc, epoch)
-        writer.add_scalar('F1_Score/train', train_f1, epoch)
-        writer.add_scalar('F1_Score/val', val_f1, epoch)
-        writer.add_scalar('Precision/train', train_precision, epoch)
-        writer.add_scalar('Precision/val', val_precision, epoch)
-        writer.add_scalar('Recall/train', train_recall, epoch)
-        writer.add_scalar('Recall/val', val_recall, epoch)
-        writer.add_scalar('Balanced_Accuracy/train', train_bal_acc, epoch)
-        writer.add_scalar('Balanced_Accuracy/val', val_bal_acc, epoch)
-        
-        # Save metrics to log
-        log['epochs'].append(epoch + 1)
         log['train_losses'].append(train_loss)
         log['val_losses'].append(val_loss)
         log['train_accuracies'].append(train_acc)
@@ -272,6 +246,18 @@ def train_model(model, train_loader, val_loader, criterion, optimizer, scheduler
         log['val_recall'].append(val_recall)
         log['train_bal_acc'].append(train_bal_acc)
         log['val_bal_acc'].append(val_bal_acc)
+        log['epochs'].append(epoch + 1)
+
+        # Add scalar logging
+        for name, value in [
+            ('Loss/train', train_loss), ('Loss/val', val_loss),
+            ('Accuracy/train', train_acc), ('Accuracy/val', val_acc),
+            ('F1_Score/train', train_f1), ('F1_Score/val', val_f1),
+            ('Precision/train', train_precision), ('Precision/val', val_precision),
+            ('Recall/train', train_recall), ('Recall/val', val_recall),
+            ('Balanced_Accuracy/train', train_bal_acc), ('Balanced_Accuracy/val', val_bal_acc)
+        ]:
+            writer.add_scalar(name, value, epoch)
 
         writer.flush()
         
@@ -296,60 +282,104 @@ def train_model(model, train_loader, val_loader, criterion, optimizer, scheduler
                 print("Early stopping!")
                 break
 
-    # Save training log
-    with open(os.path.join(run_dir, 'training_log.json'), 'w') as f:
+    # Save training log and plot curves
+    with open(os.path.join(run_dir, f'training_log_{datetime.now().strftime("%Y%m%d_%H%M%S")}.json'), 'w') as f:
         json.dump(log, f, indent=4)
 
-    # Plot and save training curves
-    plt.figure(figsize=(12, 5))
-    plt.subplot(1, 2, 1)
-    plt.plot(log['epochs'], log['train_losses'], label='Train Loss')
-    plt.plot(log['epochs'], log['val_losses'], label='Validation Loss')
-    plt.xlabel('Epochs')
-    plt.ylabel('Loss')
-    plt.title('Training and Validation Loss')
-    plt.legend()
-
-    plt.subplot(1, 2, 2)
-    plt.plot(log['epochs'], log['train_accuracies'], label='Train Accuracy')
-    plt.plot(log['epochs'], log['val_accuracies'], label='Validation Accuracy')
-    plt.xlabel('Epochs')
-    plt.ylabel('Accuracy')
-    plt.title('Training and Validation Accuracy')
-    plt.legend()
-
-    plt.tight_layout()
-    plt.savefig(os.path.join(run_dir, 'training_curves.png'))
-    plt.close()
+    plot_training_curves(log)
 
     return model
 
+def plot_training_curves(log):
+    plt.figure(figsize=(15, 10))
+    
+    metrics = [
+        ('Loss', 'losses'), ('Accuracy', 'accuracies'),
+        ('F1 Score', 'f1'), ('Precision', 'precision'),
+        ('Recall', 'recall'), ('Balanced Accuracy', 'bal_acc')
+    ]
+    
+    for i, (metric_name, metric_key) in enumerate(metrics, 1):
+        plt.subplot(3, 2, i)
+        plt.plot(log['epochs'], log[f'train_{metric_key}'], label=f'Train {metric_name}')
+        plt.plot(log['epochs'], log[f'val_{metric_key}'], label=f'Validation {metric_name}')
+        plt.xlabel('Epochs')
+        plt.ylabel(metric_name)
+        plt.title(f'Training and Validation {metric_name}')
+        plt.legend()
+
+    plt.tight_layout()
+    plt.savefig(os.path.join(run_dir, f'training_curves_{datetime.now().strftime("%Y%m%d_%H%M%S")}.png'))
+    plt.close()
+
 def main():
-    # Split the data into training and validation sets
+    global images, labels  # Declare images and labels as global variables
     X_train, X_val, y_train, y_val = train_test_split(images, labels, test_size=0.2, random_state=42, stratify=labels)
 
-    # Dataset and DataLoader
+    # Implement k-fold cross-validation
+    k_folds = 5
+    kf = KFold(n_splits=k_folds, shuffle=True, random_state=42)
+    
+    fold_results = []
+
+    for fold, (train_idx, val_idx) in enumerate(kf.split(X_train), 1):
+        print(f"Fold {fold}/{k_folds}")
+        
+        # Split data for this fold
+        X_train_fold = [X_train[i] for i in train_idx]
+        y_train_fold = [y_train[i] for i in train_idx]
+        X_val_fold = [X_train[i] for i in val_idx]
+        y_val_fold = [y_train[i] for i in val_idx]
+
+        train_dataset = CellDataset(X_train_fold, y_train_fold, transform=augment)
+        val_dataset = CellDataset(X_val_fold, y_val_fold, transform=val_transform)
+
+        train_loader = DataLoader(train_dataset, batch_size=32, shuffle=True, num_workers=0)
+        val_loader = DataLoader(val_dataset, batch_size=32, shuffle=False, num_workers=0)
+
+        model = initialize_model().to(device)
+        criterion = nn.CrossEntropyLoss()
+        optimizer = torch.optim.Adam(model.parameters(), lr=1e-3, weight_decay=1e-5)  # Added weight decay
+        scheduler = lr_scheduler.ReduceLROnPlateau(optimizer, mode='min', patience=5, factor=0.5)
+
+        model = train_model(model, train_loader, val_loader, criterion, optimizer, scheduler)
+        
+        # Evaluate the model on the validation set
+        model.eval()
+        val_predictions = []
+        val_true_labels = []
+        with torch.no_grad():
+            for inputs, labels in val_loader:
+                inputs, labels = inputs.to(device), labels.to(device)
+                outputs = model(inputs)
+                _, predicted = torch.max(outputs, 1)
+                val_predictions.extend(predicted.cpu().numpy())
+                val_true_labels.extend(labels.cpu().numpy())
+        
+        fold_f1 = f1_score(val_true_labels, val_predictions, average='weighted')
+        fold_results.append(fold_f1)
+        print(f"Fold {fold} F1 Score: {fold_f1:.4f}")
+
+    print(f"Cross-validation results: {fold_results}")
+    print(f"Mean F1 Score: {np.mean(fold_results):.4f} (+/- {np.std(fold_results):.4f})")
+
+    # Train on the entire training set
     train_dataset = CellDataset(X_train, y_train, transform=augment)
     val_dataset = CellDataset(X_val, y_val, transform=val_transform)
 
-    train_loader = DataLoader(train_dataset, batch_size=32, shuffle=True, num_workers=0)  # Set num_workers to 0
-    val_loader = DataLoader(val_dataset, batch_size=32, shuffle=False, num_workers=0)  # Set num_workers to 0
+    train_loader = DataLoader(train_dataset, batch_size=32, shuffle=True, num_workers=0)
+    val_loader = DataLoader(val_dataset, batch_size=32, shuffle=False, num_workers=0)
 
-    # Model initialization
     model = initialize_model().to(device)
-    
-    # Define loss function and optimizer
     criterion = nn.CrossEntropyLoss()
-    optimizer = torch.optim.Adam(model.parameters(), lr=1e-3)
-    scheduler = lr_scheduler.ReduceLROnPlateau(optimizer, mode='min', patience=5, factor=0.5, verbose=True)
+    optimizer = torch.optim.Adam(model.parameters(), lr=1e-3, weight_decay=1e-5)
+    scheduler = lr_scheduler.ReduceLROnPlateau(optimizer, mode='min', patience=5, factor=0.5)
 
-    # Train the model
     model = train_model(model, train_loader, val_loader, criterion, optimizer, scheduler)
 
     print("Training completed")
     writer.close()
 
-    # Save the final model
     torch.save(model.state_dict(), os.path.join(run_dir, 'final_model.pth'))
     print(f"Final model saved in {run_dir}")
 
