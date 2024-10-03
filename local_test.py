@@ -46,8 +46,11 @@ for index, row in tqdm(labels_df.iterrows(), total=len(labels_df)):
         if index < 5:
             utils.plot_image(img, f"Image ID: {img_id}, Actual Label: {actual_label}")
         
+        # Encode image to base64 to simulate API input
+        img_base64 = utils.encode_image(img)
+        
         # Predict using the model
-        predicted_label = predict(img)
+        predicted_label = predict(img_base64)
         
         # Update correct predictions
         if predicted_label == 0 and actual_label == 0:

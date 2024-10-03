@@ -57,6 +57,7 @@ def predict_endpoint(request: CellClassificationPredictRequestDto):
         save_base64_image(request.cell, image_path)
         logger.info(f"Saved validation image: {image_path}")
 
+        # Pass the base64 string directly to predict function
         predicted_homogenous_state = predict(request.cell)
         if predicted_homogenous_state == -1:
             logger.error("Prediction returned error code -1")

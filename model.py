@@ -36,8 +36,12 @@ transform = transforms.Compose([
     transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])
 ])
 
-def predict(image: np.ndarray) -> int:
+def predict(image: str) -> int:
     try:
+        # Decode base64 string to numpy array
+        if isinstance(image, str):
+            image = utils.decode_image(image)
+        
         img_tensor = transform(image).unsqueeze(0)
         with torch.no_grad():
             output = model(img_tensor)
