@@ -36,7 +36,7 @@ model_path = 'runs/first_1003_1451_0/best_model.pth'  # Updated model path
 
 # Load the trained model
 model = get_efficientnet_b3(num_classes=2)
-model.load_state_dict(torch.load(model_path, map_location=torch.device('cpu')))
+model.load_state_dict(torch.load(model_path, map_location=torch.device('cpu')), strict=False)  # Allow loading with strict=False
 model.eval()
 
 # Update the transform to match the training script
