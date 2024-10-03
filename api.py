@@ -6,10 +6,7 @@ from model import predict
 from loguru import logger
 from pydantic import BaseModel
 from typing import List
-import os
 import base64
-import cv2
-import numpy as np
 
 HOST = "0.0.0.0"
 PORT = 8080 
@@ -22,19 +19,6 @@ class CellClassificationPredictResponseDto(BaseModel):
 
 app = FastAPI()
 start_time = time.time()
-
-# Create a directory to save validation images
-VAL_SET_DIR = 'val_set_delete_this_later'
-os.makedirs(VAL_SET_DIR, exist_ok=True)
-
-def save_base64_image(base64_string, file_path):
-    try:
-        img_data = base64.b64decode(base64_string)
-        nparr = np.frombuffer(img_data, np.uint8)
-        img = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
-        cv2.imwrite(file_path, img)
-    except Exception as e:
-        logger.error(f"Error saving base64 image: {str(e)}")
 
 @app.get('/api')
 def hello():
@@ -50,13 +34,6 @@ def index():
 @app.post('/predict', response_model=CellClassificationPredictResponseDto)
 def predict_endpoint(request: CellClassificationPredictRequestDto):
     try:
-        # Save the received base64 image
-        image_count = len(os.listdir(VAL_SET_DIR))
-        image_filename = f"val_image_{image_count}.png"
-        image_path = os.path.join(VAL_SET_DIR, image_filename)
-        save_base64_image(request.cell, image_path)
-        logger.info(f"Saved validation image: {image_path}")
-
         # Pass the base64 string directly to predict function
         predicted_homogenous_state = predict(request.cell)
         if predicted_homogenous_state == -1:
