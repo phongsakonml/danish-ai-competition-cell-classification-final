@@ -8,7 +8,7 @@ import os
 import random
 import utils
 
-MODEL_NAME = 'steve'
+MODEL_NAME = 'thinkpad'
 MODEL_PATH = f'runs/{MODEL_NAME}/best_model.pth'
 
 def get_efficientnet_b0(num_classes=2):
@@ -20,6 +20,12 @@ def get_efficientnet_b0(num_classes=2):
         nn.Linear(512, num_classes)  # Adjusted to match the number of classes
     )
     return model
+
+# Load the Steve model (assuming similar structure as Thinkpad)
+STEVE_MODEL_PATH = 'runs/steve/best_model.pth'
+steve_model = get_efficientnet_b0(num_classes=2)  # Ensure num_classes matches the saved model
+steve_model.load_state_dict(torch.load(STEVE_MODEL_PATH, map_location=torch.device('cpu')))
+steve_model.eval()
 
 # Load the trained model from the specified path
 model = get_efficientnet_b0(num_classes=2)  # Ensure num_classes matches the saved model
@@ -41,9 +47,19 @@ def predict(image: str) -> int:
             image = utils.decode_image(image)
         
         img_tensor = transform(image).unsqueeze(0)
+        
         with torch.no_grad():
-            output = model(img_tensor)
-            _, predicted = torch.max(output, 1)
+            # Get predictions from both models
+            output_thinkpad = model(img_tensor)
+            output_steve = steve_model(img_tensor)
+            
+            # Apply softmax to get probabilities
+            prob_thinkpad = torch.softmax(output_thinkpad, dim=1)
+            prob_steve = torch.softmax(output_steve, dim=1)
+            
+            # Combine predictions using adjusted weights
+            combined_prob = (0.5 * prob_thinkpad + 0.5 * prob_steve)  # Adjusted weights
+            _, predicted = torch.max(combined_prob, 1)
             return predicted.item() 
     except Exception as e:
         print(f"Error in predict function: {str(e)}")
