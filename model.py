@@ -1,29 +1,41 @@
 import torch
-import torch.nn as nn
 from torchvision import models, transforms
-import cv2
+from PIL import Image
 import numpy as np
 import base64
 import os
 import random
 import utils
 
-def get_efficientnet_b0(num_classes=2):
-    model = models.efficientnet_b0(weights=models.EfficientNet_B0_Weights.IMAGENET1K_V1)
-    model.classifier = nn.Sequential(
-        nn.Linear(in_features=1280, out_features=640),  # Adjusted output features to match the saved model
-        nn.ReLU(),
-        nn.Dropout(0.4),
-        nn.Linear(640, 320),  # Adjusted to match the saved model
-        nn.ReLU(),
-        nn.Dropout(0.4),
-        nn.Linear(320, num_classes)  # Adjusted to match the number of classes
+def get_efficientnet_b3(num_classes=2):
+    model = models.efficientnet_b3(weights=models.EfficientNet_B3_Weights.IMAGENET1K_V1)
+    
+    # Freeze all layers
+    for param in model.parameters():
+        param.requires_grad = False
+    
+    # Unfreeze the last few layers
+    for param in model.features[-3:].parameters():
+        param.requires_grad = True
+    
+    # Modify the classifier
+    model.classifier = torch.nn.Sequential(
+        torch.nn.Linear(in_features=1536, out_features=640),
+        torch.nn.ReLU(),
+        torch.nn.Dropout(0.4),
+        torch.nn.Linear(640, 320),
+        torch.nn.ReLU(),
+        torch.nn.Dropout(0.4),
+        torch.nn.Linear(320, num_classes)
     )
+    
     return model
 
-# Load the trained model from the specified path
-model = get_efficientnet_b0(num_classes=2)  # Ensure num_classes matches the saved model
-model_path = 'runs/efficientnet_b0_balanced_advanced_20241003_093305_0/best_model.pth'  # Updated path
+# Update the model path to use the best model
+model_path = 'runs/first_1003_1451_0/best_model.pth'  # Updated model path
+
+# Load the trained model
+model = get_efficientnet_b3(num_classes=2)
 model.load_state_dict(torch.load(model_path, map_location=torch.device('cpu')))
 model.eval()
 
