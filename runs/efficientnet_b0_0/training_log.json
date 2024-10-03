@@ -1,6 +1,0 @@
-{
-    "model_name": "efficientnet_b0",
-    "run_name": "efficientnet_b0_0",
-    "epochs": 50,
-    "best_val_loss": 0.12218618328156679
-}
