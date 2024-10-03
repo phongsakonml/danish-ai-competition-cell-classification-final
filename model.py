@@ -20,13 +20,13 @@ def get_efficientnet_b3(num_classes=2):
     
     # Modify the classifier
     model.classifier = torch.nn.Sequential(
-        torch.nn.Linear(in_features=1536, out_features=640),
+        torch.nn.Linear(in_features=1536, out_features=640),  # Ensure this matches the trained model
         torch.nn.ReLU(),
         torch.nn.Dropout(0.4),
         torch.nn.Linear(640, 320),
         torch.nn.ReLU(),
         torch.nn.Dropout(0.4),
-        torch.nn.Linear(320, num_classes)
+        torch.nn.Linear(320, num_classes)  # Ensure this matches the number of classes used during training
     )
     
     return model
@@ -35,7 +35,7 @@ def get_efficientnet_b3(num_classes=2):
 model_path = 'runs/first_1003_1451_0/best_model.pth'  # Updated model path
 
 # Load the trained model
-model = get_efficientnet_b3(num_classes=2)
+model = get_efficientnet_b3(num_classes=2)  # Ensure num_classes matches the trained model
 model.load_state_dict(torch.load(model_path, map_location=torch.device('cpu')), strict=False)  # Allow loading with strict=False
 model.eval()
 
