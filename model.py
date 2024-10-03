@@ -20,7 +20,7 @@ def get_efficientnet_b0(num_classes=2):
 
 # Load the trained model from the specified path
 model = get_efficientnet_b0(num_classes=2)  # Ensure num_classes matches the saved model
-model_path = 'runs/apple/best_model.pth'  # Updated path
+model_path = 'runs/elon/best_model.pth'  # Updated path
 model.load_state_dict(torch.load(model_path, map_location=torch.device('cpu')))
 model.eval()
 
