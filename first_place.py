@@ -3,7 +3,7 @@ import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
 from skimage import io, exposure
-from sklearn.model_selection import train_test_split, KFold
+from sklearn.model_selection import train_test_split
 import torch
 import torch.nn as nn
 from torchvision import models
@@ -11,18 +11,16 @@ from datetime import datetime
 import json
 from tqdm import tqdm
 from torch.optim import lr_scheduler
-from sklearn.metrics import f1_score, precision_recall_fscore_support, confusion_matrix, balanced_accuracy_score, roc_auc_score
+from sklearn.metrics import f1_score, precision_recall_fscore_support, confusion_matrix, balanced_accuracy_score, classification_report
 from torch.utils.tensorboard import SummaryWriter
 from torch.utils.data import DataLoader, Dataset
 import albumentations as A
 from albumentations.pytorch import ToTensorV2
-from torch.cuda.amp import GradScaler, autocast  # Update import for mixed precision
 from sklearn.utils.class_weight import compute_class_weight
 
 # Load the data
 data_dir = 'data/training_balanced'  # Use the balanced dataset
 labels_file = 'data/training_balanced.csv'
-model_name = "first"
 
 # Read labels
 labels_df = pd.read_csv(labels_file)
@@ -60,13 +58,22 @@ labels = np.array(labels, dtype=int)
 class_distribution = np.bincount(labels)
 print(f"Class distribution: {class_distribution}")
 
-# Data Augmentation
+# Model Selection: Transfer Learning with EfficientNet-B0
+device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+print(f"Using device: {device}")
+
+# Calculate class weights
+class_weights = compute_class_weight('balanced', classes=np.unique(labels), y=labels)
+class_weights = torch.tensor(class_weights, dtype=torch.float).to(device)
+
+# Adjust data augmentation
 augment = A.Compose([
     A.Resize(224, 224),
     A.HorizontalFlip(p=0.5),
     A.VerticalFlip(p=0.5),
-    A.Rotate(limit=30, p=0.7),
+    A.Rotate(limit=30, p=0.5),
     A.RandomBrightnessContrast(p=0.2),
+    A.GaussNoise(var_limit=(10.0, 50.0), p=0.2),  # Add some noise
     A.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]),
     ToTensorV2()
 ])
@@ -96,31 +103,23 @@ class CellDataset(Dataset):
         
         return image, label
 
-# Model Selection: Transfer Learning with EfficientNet-B2
-device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-print(f"Using device: {device}")
-
+# Model initialization
 def initialize_model():
-    model = models.efficientnet_b2(weights=models.EfficientNet_B2_Weights.IMAGENET1K_V1)  # Changed to EfficientNet-B2
+    model = models.efficientnet_b0(weights=models.EfficientNet_B0_Weights.IMAGENET1K_V1)
     
+    # Freeze all layers initially
     for param in model.parameters():
         param.requires_grad = False
     
-    # Unfreeze more layers for fine-tuning
-    for param in model.features[-3:].parameters():
+    # Gradually unfreeze layers
+    for param in model.features[-4:].parameters():  # Unfreeze the last 4 layers
         param.requires_grad = True
     
-    # Get the number of features in the last layer
-    num_ftrs = model.classifier[1].in_features
-    
     model.classifier = nn.Sequential(
-        nn.Linear(in_features=num_ftrs, out_features=640),
+        nn.Linear(in_features=1280, out_features=512),
         nn.ReLU(),
-        nn.Dropout(0.4),
-        nn.Linear(640, 320),
-        nn.ReLU(),
-        nn.Dropout(0.4),
-        nn.Linear(320, 2)
+        nn.Dropout(0.4),  # Slightly reduced dropout rate
+        nn.Linear(512, 2)
     )
     return model
 
@@ -130,7 +129,7 @@ os.makedirs('runs', exist_ok=True)
 def get_run_name(model_name, base_dir='runs'):
     counter = 0
     while True:
-        run_name = f"{model_name}_{datetime.now().strftime('%m%d_%H%M')}_{counter}"
+        run_name = f"{model_name}_{datetime.now().strftime('%Y%m%d_%H%M%S')}_{counter}"
         run_dir = os.path.join(base_dir, run_name)
         try:
             os.makedirs(run_dir)
@@ -138,19 +137,22 @@ def get_run_name(model_name, base_dir='runs'):
         except FileExistsError:
             counter += 1
 
+model_name = "efficientnet_b0"
 run_name, run_dir = get_run_name(model_name)
 
 # Create a SummaryWriter for this run
 writer = SummaryWriter(log_dir=run_dir)
 
-def visualize_samples(images, labels, transform=None, num_samples=5, save_dir='runs'):
-    """Save original and augmented images to the specified directory."""
-    os.makedirs(save_dir, exist_ok=True)  # Create directory if it doesn't exist
+def visualize_samples(images, labels, transform=None, num_samples=5):
+    """Visualize original and augmented images."""
+    fig, axes = plt.subplots(2, num_samples, figsize=(20, 8))
+    
     for i in range(num_samples):
         # Original image
         image = images[i]
-        original_image_path = os.path.join(save_dir, f"original_label_{labels[i]}.png")
-        plt.imsave(original_image_path, image)
+        axes[0, i].imshow(image)
+        axes[0, i].set_title(f"Original Label: {labels[i]}")
+        axes[0, i].axis('off')
         
         # Augmented image
         if transform:
@@ -158,35 +160,48 @@ def visualize_samples(images, labels, transform=None, num_samples=5, save_dir='r
             aug_image = augmented['image'].permute(1, 2, 0).numpy()
             aug_image = (aug_image * np.array([0.229, 0.224, 0.225]) + np.array([0.485, 0.456, 0.406])) * 255
             aug_image = aug_image.astype(np.uint8)
-            augmented_image_path = os.path.join(save_dir, f"augmented_label_{labels[i]}.png")
-            plt.imsave(augmented_image_path, aug_image)
+            axes[1, i].imshow(aug_image)
+            axes[1, i].set_title(f"Augmented Label: {labels[i]}")
+            axes[1, i].axis('off')
+    
+    plt.tight_layout()
+    plt.show()
 
-# Replace the call to visualize_samples with the new function
-# Save some samples before augmentation
-visualize_samples(images, labels, augment, num_samples=5, save_dir=run_dir)
+# Visualize some samples before and after augmentation
+visualize_samples(images, labels, transform=augment)
 
-# Ensure the model is moved to the GPU when initialized
-model = initialize_model().to(device)
+# Add a function to analyze per-class performance
+def analyze_per_class_performance(true_labels, predictions):
+    report = classification_report(true_labels, predictions, target_names=['Heterogeneous', 'Homogeneous'])
+    print(report)
+    cm = confusion_matrix(true_labels, predictions)
+    print("Confusion Matrix:")
+    print(cm)
 
-# Calculate class weights
-class_weights = compute_class_weight('balanced', classes=np.unique(labels), y=labels)
-class_weights = torch.tensor(class_weights, dtype=torch.float).to(device)
-
-# Update the criterion to include class weights
-criterion = nn.CrossEntropyLoss(weight=class_weights)
-
-def train_model(model, train_loader, val_loader, criterion, optimizer, scheduler, num_epochs=100, patience=10):  # Changed num_epochs to 100
+# Update the training loop to analyze per-class performance
+def train_model(model, train_loader, val_loader, criterion, optimizer, scheduler, num_epochs=150):
     best_val_loss = float('inf')
-    best_model_state = None  # Store the best model state
+    patience = 5  # Early stopping patience
     early_stopping_counter = 0
+    best_model_state = None
+
+    # Log for saving training metrics
     log = {
-        'epochs': [], 'train_losses': [], 'val_losses': [], 'train_accuracies': [], 'val_accuracies': [],
-        'train_f1': [], 'val_f1': [], 'train_precision': [], 'val_precision': [],
-        'train_recall': [], 'val_recall': [], 'train_bal_acc': [], 'val_bal_acc': [],
-        'train_auc': [], 'val_auc': []  # Added AUC metrics
+        'epochs': [],
+        'train_losses': [],
+        'val_losses': [],
+        'train_accuracies': [],
+        'val_accuracies': [],
+        'train_f1': [],
+        'val_f1': [],
+        'train_precision': [],
+        'val_precision': [],
+        'train_recall': [],
+        'val_recall': [],
+        'train_bal_acc': [],
+        'val_bal_acc': []
     }
 
-    scaler = GradScaler()  # Initialize the gradient scaler for mixed precision
     for epoch in range(num_epochs):
         model.train()
         train_loss = 0.0
@@ -196,13 +211,12 @@ def train_model(model, train_loader, val_loader, criterion, optimizer, scheduler
         
         for inputs, labels in tqdm(train_loader, desc=f"Epoch {epoch+1}/{num_epochs}", leave=False):
             inputs, labels = inputs.to(device), labels.to(device)
+            
             optimizer.zero_grad()
-            with autocast():  # Enable mixed precision
-                outputs = model(inputs)
-                loss = criterion(outputs, labels)
-            scaler.scale(loss).backward()  # Scale the loss for backpropagation
-            scaler.step(optimizer)  # Update the weights
-            scaler.update()  # Update the scaler
+            outputs = model(inputs)
+            loss = criterion(outputs, labels)
+            loss.backward()
+            optimizer.step()
             
             train_loss += loss.item() * inputs.size(0)
             _, predicted = torch.max(outputs, 1)
@@ -215,11 +229,6 @@ def train_model(model, train_loader, val_loader, criterion, optimizer, scheduler
         
         # Calculate training metrics
         train_f1 = f1_score(train_true_labels, train_predictions, average='weighted')
-        train_precision, train_recall, _, _ = precision_recall_fscore_support(
-            train_true_labels, train_predictions, average='weighted'
-        )
-        train_bal_acc = balanced_accuracy_score(train_true_labels, train_predictions)
-        train_auc = roc_auc_score(train_true_labels, train_predictions)
         
         model.eval()
         val_loss = 0.0
@@ -243,179 +252,109 @@ def train_model(model, train_loader, val_loader, criterion, optimizer, scheduler
         
         # Calculate validation metrics
         val_f1 = f1_score(val_true_labels, val_predictions, average='weighted')
-        val_precision, val_recall, _, _ = precision_recall_fscore_support(
-            val_true_labels, val_predictions, average='weighted'
-        )
+        val_precision, val_recall, _, _ = precision_recall_fscore_support(val_true_labels, val_predictions, average='weighted')
         val_bal_acc = balanced_accuracy_score(val_true_labels, val_predictions)
-        val_auc = roc_auc_score(val_true_labels, val_predictions)
         
         # Log metrics
+        writer.add_scalar('Loss/train', train_loss, epoch)
+        writer.add_scalar('Loss/val', val_loss, epoch)
+        writer.add_scalar('Accuracy/train', train_acc, epoch)
+        writer.add_scalar('Accuracy/val', val_acc, epoch)
+        writer.add_scalar('F1_Score/val', val_f1, epoch)
+        writer.add_scalar('Precision/val', val_precision, epoch)
+        writer.add_scalar('Recall/val', val_recall, epoch)
+        writer.add_scalar('Balanced_Accuracy/val', val_bal_acc, epoch)
+        
+        # Save metrics to log
+        log['epochs'].append(epoch + 1)
         log['train_losses'].append(train_loss)
         log['val_losses'].append(val_loss)
         log['train_accuracies'].append(train_acc)
         log['val_accuracies'].append(val_acc)
         log['train_f1'].append(train_f1)
         log['val_f1'].append(val_f1)
-        log['train_precision'].append(train_precision)
-        log['val_precision'].append(val_precision)
-        log['train_recall'].append(train_recall)
-        log['val_recall'].append(val_recall)
-        log['train_bal_acc'].append(train_bal_acc)
-        log['val_bal_acc'].append(val_bal_acc)
-        log['epochs'].append(epoch + 1)
 
+        writer.flush()
+        
         print(f"\nEpoch {epoch+1}/{num_epochs}")
         print(f"Train Loss: {train_loss:.4f}, Train Acc: {train_acc:.4f}")
         print(f"Val Loss: {val_loss:.4f}, Val Acc: {val_acc:.4f}")
-        print(f"Train F1: {train_f1:.4f}, Val F1: {val_f1:.4f}")
-        print(f"Train Precision: {train_precision:.4f}, Val Precision: {val_precision:.4f}")
-        print(f"Train Recall: {train_recall:.4f}, Val Recall: {val_recall:.4f}")
-        print(f"Train Balanced Accuracy: {train_bal_acc:.4f}, Val Balanced Accuracy: {val_bal_acc:.4f}")
-        print(f"Train AUC: {train_auc:.4f}, Val AUC: {val_auc:.4f}")
+        print(f"Val F1: {val_f1:.4f}, Val Precision: {val_precision:.4f}, Val Recall: {val_recall:.4f}")
+        print(f"Val Balanced Accuracy: {val_bal_acc:.4f}")
         
         scheduler.step(val_loss)
-
-        # Save the model and log only if it's the best model
+        
         if val_loss < best_val_loss:
             best_val_loss = val_loss
-            best_model_state = model.state_dict()  # Save the best model state
-            early_stopping_counter = 0  # Reset early stopping counter
-            # Save the training log and plot curves only for the best model
-            with open(os.path.join(run_dir, f'training_log_best_model.json'), 'w') as f:
-                json.dump(log, f, indent=4)
-            plot_training_curves(log)  # Save the training curves for the best model
+            best_model_state = model.state_dict()
+            torch.save(best_model_state, os.path.join(run_dir, 'best_model.pth'))
+            print("New best model saved!")
+            early_stopping_counter = 0
         else:
-            early_stopping_counter += 1  # Increment early stopping counter
-            if early_stopping_counter >= patience:  # Check for early stopping
-                print("Early stopping triggered.")
+            early_stopping_counter += 1
+            if early_stopping_counter >= patience:
+                print("Early stopping!")
                 break
 
-    # Save the best model
-    best_model_path = os.path.join(run_dir, 'best_model.pth')
-    torch.save(best_model_state, best_model_path)
-    print(f"Best model saved in {best_model_path}")
-
-    return model, best_model_path
-
-def plot_training_curves(log):
-    # Ensure that there are metrics to plot
-    if not log['train_losses'] or not log['val_losses']:
-        print("No training or validation losses to plot.")
-        return
-
-    plt.figure(figsize=(15, 12))  # Adjusted figure size for better visibility
+    # Load the best model for final evaluation
+    model.load_state_dict(best_model_state)
     
-    metrics = [
-        ('Loss', 'losses'), ('Accuracy', 'accuracies'),
-        ('F1 Score', 'f1'), ('Precision', 'precision'),
-        ('Recall', 'recall'), ('Balanced Accuracy', 'bal_acc'),
-        ('AUC', 'auc')  # Added AUC to the metrics
-    ]
+    # Analyze per-class performance
+    model.eval()
+    all_predictions = []
+    all_true_labels = []
+    with torch.no_grad():
+        for inputs, labels in val_loader:
+            inputs, labels = inputs.to(device), labels.to(device)
+            outputs = model(inputs)
+            _, predicted = torch.max(outputs, 1)
+            all_predictions.extend(predicted.cpu().numpy())
+            all_true_labels.extend(labels.cpu().numpy())
     
-    for i, (metric_name, metric_key) in enumerate(metrics, 1):
-        plt.subplot(4, 2, i)  # Adjusted subplot grid for AUC
-        if len(log['epochs']) > 0 and len(log[f'train_{metric_key}']) > 0:
-            plt.plot(log['epochs'], log[f'train_{metric_key}'], label=f'Train {metric_name}')
-        if len(log['epochs']) > 0 and len(log[f'val_{metric_key}']) > 0:
-            plt.plot(log['epochs'], log[f'val_{metric_key}'], label=f'Validation {metric_name}')
-        plt.xlabel('Epochs')
-        plt.ylabel(metric_name)
-        plt.title(f'Training and Validation {metric_name}')
-        plt.legend()
+    analyze_per_class_performance(all_true_labels, all_predictions)
 
-    plt.tight_layout()
-    plt.savefig(os.path.join(run_dir, f'training_curves_{datetime.now().strftime("%Y%m%d_%H%M%S")}.png'))
-    plt.close()
+    # Save training log
+    with open(os.path.join(run_dir, 'training_log.json'), 'w') as f:
+        json.dump(log, f, indent=4)
+
+    return model
 
 def main():
-    global images, labels  # Declare images and labels as global variables
+    # Split the data into training and validation sets
     X_train, X_val, y_train, y_val = train_test_split(images, labels, test_size=0.2, random_state=42, stratify=labels)
 
-    # Implement k-fold cross-validation
-    k_folds = 5
-    kf = KFold(n_splits=k_folds, shuffle=True, random_state=42)
-    
-    fold_results = []
-
-    for fold, (train_idx, val_idx) in enumerate(kf.split(X_train), 1):
-        print(f"Fold {fold}/{k_folds}")
-        
-        # Split data for this fold
-        X_train_fold = [X_train[i] for i in train_idx]
-        y_train_fold = [y_train[i] for i in train_idx]
-        X_val_fold = [X_train[i] for i in val_idx]
-        y_val_fold = [y_train[i] for i in val_idx]
-
-        train_dataset = CellDataset(X_train_fold, y_train_fold, transform=augment)
-        val_dataset = CellDataset(X_val_fold, y_val_fold, transform=val_transform)
-
-        train_loader = DataLoader(train_dataset, batch_size=32, shuffle=True, num_workers=0)
-        val_loader = DataLoader(val_dataset, batch_size=32, shuffle=False, num_workers=0)
-
-        model = initialize_model().to(device)
-        criterion = nn.CrossEntropyLoss()
-        optimizer = torch.optim.Adam(model.parameters(), lr=1e-3, weight_decay=1e-5)  # Added weight decay
-        scheduler = lr_scheduler.ReduceLROnPlateau(optimizer, mode='min', patience=5, factor=0.5)
-
-        model, best_model_path = train_model(model, train_loader, val_loader, criterion, optimizer, scheduler)
-        
-        # Evaluate the model on the validation set
-        model.eval()
-        val_predictions = []
-        val_true_labels = []
-        with torch.no_grad():
-            for inputs, labels in val_loader:
-                inputs, labels = inputs.to(device), labels.to(device)
-                outputs = model(inputs)
-                _, predicted = torch.max(outputs, 1)
-                val_predictions.extend(predicted.cpu().numpy())
-                val_true_labels.extend(labels.cpu().numpy())
-        
-        fold_f1 = f1_score(val_true_labels, val_predictions, average='weighted')
-        fold_results.append(fold_f1)
-        print(f"Fold {fold} F1 Score: {fold_f1:.4f}")
-
-    print(f"Cross-validation results: {fold_results}")
-    print(f"Mean F1 Score: {np.mean(fold_results):.4f} (+/- {np.std(fold_results):.4f})")
-
-    # Train on the entire training set
+    # Dataset and DataLoader
     train_dataset = CellDataset(X_train, y_train, transform=augment)
     val_dataset = CellDataset(X_val, y_val, transform=val_transform)
 
-    train_loader = DataLoader(train_dataset, batch_size=32, shuffle=True, num_workers=0)
-    val_loader = DataLoader(val_dataset, batch_size=32, shuffle=False, num_workers=0)
+    train_loader = DataLoader(train_dataset, batch_size=32, shuffle=True, num_workers=0)  # Set num_workers to 0
+    val_loader = DataLoader(val_dataset, batch_size=32, shuffle=False, num_workers=0)  # Set num_workers to 0
 
+    # Model initialization
     model = initialize_model().to(device)
-    criterion = nn.CrossEntropyLoss()
-    optimizer = torch.optim.Adam(model.parameters(), lr=1e-3, weight_decay=1e-5)
-    scheduler = lr_scheduler.ReduceLROnPlateau(optimizer, mode='min', patience=5, factor=0.5)
+    
+    # Define loss function and optimizer with reduced L2 regularization
+    criterion = nn.CrossEntropyLoss(weight=class_weights)
+    optimizer = torch.optim.Adam(model.parameters(), lr=1e-3, weight_decay=1e-6)  # Reduced L2 regularization
 
-    model, best_model_path = train_model(model, train_loader, val_loader, criterion, optimizer, scheduler)
+    # Implement learning rate scheduling
+    scheduler = lr_scheduler.ReduceLROnPlateau(optimizer, mode='min', patience=3, factor=0.1, verbose=True)
+
+    # Train the model
+    model = train_model(model, train_loader, val_loader, criterion, optimizer, scheduler)
 
     print("Training completed")
     writer.close()
 
-    # Update the model.py with the new best model path
-    update_model_py(best_model_path)
+    # Fine-tuning with smaller learning rate
+    print("Starting fine-tuning...")
+    optimizer = torch.optim.Adam(model.parameters(), lr=1e-5, weight_decay=1e-6)
+    scheduler = lr_scheduler.ReduceLROnPlateau(optimizer, mode='min', patience=2, factor=0.1, verbose=True)
+    model = train_model(model, train_loader, val_loader, criterion, optimizer, scheduler, num_epochs=20)
 
-    # Run local_test.py
-    print("Running local test...")
-    os.system(f"python local_test.py")
-
-def update_model_py(best_model_path):
-    with open('model.py', 'r') as file:
-        content = file.read()
-    
-    # Update the model path dynamically
-    updated_content = content.replace(
-        "model_path = 'PLACEHOLDER_MODEL_PATH'",  # Use the placeholder
-        f"model_path = '{best_model_path}'"
-    )
-    
-    with open('model.py', 'w') as file:
-        file.write(updated_content)
-    
-    print(f"Updated model.py with new best model path: {best_model_path}")
+    # Save the final model
+    torch.save(model.state_dict(), os.path.join(run_dir, 'final_model.pth'))
+    print(f"Final model saved in {run_dir}")
 
 if __name__ == '__main__':
     main()

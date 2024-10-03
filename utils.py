@@ -2,6 +2,7 @@ import numpy as np
 import cv2
 import base64 
 import matplotlib.pyplot as plt
+import os
 
 def decode_image(encoded_img) -> np.ndarray:
     np_img = np.frombuffer(base64.b64decode(encoded_img), np.uint8)
@@ -10,6 +11,17 @@ def decode_image(encoded_img) -> np.ndarray:
     if img.dtype == np.uint16:
         img = (img / 256).astype(np.uint8)
     return img
+
+def load_image(image_id: int) -> np.ndarray:
+    # Format the image ID to match the naming convention (e.g., '001', '011', etc.)
+    formatted_id = f"{image_id:03d}"  # Format as three digits
+    image_path = f'cell-class-final/data/training/{formatted_id}.tif'  # Adjust the path and extension as needed
+    print(f"Attempting to load image from: {image_path}")  # Debugging print statement
+    img_array = cv2.imread(image_path, cv2.IMREAD_COLOR)
+    if img_array is None:
+        raise FileNotFoundError(f"Image not found: {image_path}")
+    img_array = cv2.cvtColor(img_array, cv2.COLOR_BGR2RGB)
+    return img_array
 
 def tif_to_ndarray(tif_path):
     img_array = cv2.imread(tif_path, cv2.IMREAD_COLOR)

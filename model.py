@@ -1,44 +1,27 @@
 import torch
+import torch.nn as nn
 from torchvision import models, transforms
-from PIL import Image
+import cv2
 import numpy as np
 import base64
 import os
 import random
 import utils
 
-def get_efficientnet_b3(num_classes=2):
-    # Load the pre-trained EfficientNet-B3 model
-    model = models.efficientnet_b3(pretrained=False)
-    
-    # Modify the classifier
-    in_features = model.classifier[1].in_features
-    model.classifier = torch.nn.Sequential(
-        torch.nn.Linear(in_features=in_features, out_features=640),
-        torch.nn.ReLU(),
-        torch.nn.Dropout(0.4),
-        torch.nn.Linear(640, 320),
-        torch.nn.ReLU(),
-        torch.nn.Dropout(0.4),
-        torch.nn.Linear(320, num_classes)
+def get_efficientnet_b0(num_classes=2):
+    model = models.efficientnet_b0(weights=models.EfficientNet_B0_Weights.IMAGENET1K_V1)
+    model.classifier = nn.Sequential(
+        nn.Linear(in_features=1280, out_features=512),  # Adjusted output features
+        nn.ReLU(),
+        nn.Dropout(0.4),
+        nn.Linear(512, num_classes)  # Adjusted to match the number of classes
     )
-    
     return model
 
-# Update the model path to use the best model
-model_path = 'runs/first_1003_1451_0/best_model.pth'  # Updated model path
-
-# Load the trained model
-model = get_efficientnet_b3(num_classes=2)  # Ensure num_classes matches the trained model
-
-# Load the state dict
-state_dict = torch.load(model_path, map_location=torch.device('cpu'))
-
-# Remove the 'module.' prefix if it exists (in case the model was trained with DataParallel)
-state_dict = {k.replace('module.', ''): v for k, v in state_dict.items()}
-
-# Load the state dict, ignoring mismatched keys
-model.load_state_dict(state_dict, strict=False)
+# Load the trained model from the specified path
+model = get_efficientnet_b0(num_classes=2)  # Ensure num_classes matches the saved model
+model_path = 'runs/apple/best_model.pth'  # Updated path
+model.load_state_dict(torch.load(model_path, map_location=torch.device('cpu')))
 model.eval()
 
 # Update the transform to match the training script
