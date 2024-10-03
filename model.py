@@ -8,25 +8,19 @@ import random
 import utils
 
 def get_efficientnet_b3(num_classes=2):
-    model = models.efficientnet_b3(weights=models.EfficientNet_B3_Weights.IMAGENET1K_V1)
-    
-    # Freeze all layers
-    for param in model.parameters():
-        param.requires_grad = False
-    
-    # Unfreeze the last few layers
-    for param in model.features[-3:].parameters():
-        param.requires_grad = True
+    # Load the pre-trained EfficientNet-B3 model
+    model = models.efficientnet_b3(pretrained=False)
     
     # Modify the classifier
+    in_features = model.classifier[1].in_features
     model.classifier = torch.nn.Sequential(
-        torch.nn.Linear(in_features=1536, out_features=640),  # Ensure this matches the trained model
+        torch.nn.Linear(in_features=in_features, out_features=640),
         torch.nn.ReLU(),
         torch.nn.Dropout(0.4),
         torch.nn.Linear(640, 320),
         torch.nn.ReLU(),
         torch.nn.Dropout(0.4),
-        torch.nn.Linear(320, num_classes)  # Ensure this matches the number of classes used during training
+        torch.nn.Linear(320, num_classes)
     )
     
     return model
@@ -36,7 +30,15 @@ model_path = 'runs/first_1003_1451_0/best_model.pth'  # Updated model path
 
 # Load the trained model
 model = get_efficientnet_b3(num_classes=2)  # Ensure num_classes matches the trained model
-model.load_state_dict(torch.load(model_path, map_location=torch.device('cpu')), strict=False)  # Allow loading with strict=False
+
+# Load the state dict
+state_dict = torch.load(model_path, map_location=torch.device('cpu'))
+
+# Remove the 'module.' prefix if it exists (in case the model was trained with DataParallel)
+state_dict = {k.replace('module.', ''): v for k, v in state_dict.items()}
+
+# Load the state dict, ignoring mismatched keys
+model.load_state_dict(state_dict, strict=False)
 model.eval()
 
 # Update the transform to match the training script
