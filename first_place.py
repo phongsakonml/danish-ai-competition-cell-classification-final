@@ -18,13 +18,13 @@ import albumentations as A
 from albumentations.pytorch import ToTensorV2
 from torch.cuda.amp import GradScaler, autocast
 from torch.nn import functional as F
-from torch.optim.lr_scheduler import CosineAnnealingLR
-from torchvision.models import efficientnet_v2_s, EfficientNet_V2_S_Weights
+from torch.optim.swa_utils import AveragedModel, SWALR
+import math
 
 # Load the data
 data_dir = 'data/training_balanced'  # Use the balanced dataset
 labels_file = 'data/training_balanced.csv'
-model_name = "maria"
+model_name = "napoleon"
 
 # Read labels
 labels_df = pd.read_csv(labels_file)
@@ -67,11 +67,9 @@ augment = A.Compose([
     A.Resize(224, 224),
     A.HorizontalFlip(p=0.5),
     A.VerticalFlip(p=0.5),
-    A.RandomRotate90(p=0.5),
-    A.ShiftScaleRotate(shift_limit=0.1, scale_limit=0.1, rotate_limit=45, p=0.5),
-    A.RandomBrightnessContrast(brightness_limit=0.2, contrast_limit=0.2, p=0.5),
-    A.GaussNoise(var_limit=(10.0, 50.0), p=0.5),
-    A.CoarseDropout(max_holes=8, max_height=8, max_width=8, p=0.5),
+    A.Rotate(limit=30, p=0.7),
+    A.RandomBrightnessContrast(p=0.2),
+    A.GaussNoise(p=0.2),  # Added Gaussian noise for more variability
     A.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]),
     ToTensorV2()
 ])
@@ -85,7 +83,7 @@ val_transform = A.Compose([
 class CellDataset(Dataset):
     def __init__(self, images, labels, transform=None):
         self.images = images
-        self.labels = torch.tensor(labels, dtype=torch.long)  # Ensure labels are long tensors
+        self.labels = torch.tensor(labels, dtype=torch.long)
         self.transform = transform
 
     def __len__(self):
@@ -99,7 +97,7 @@ class CellDataset(Dataset):
             augmented = self.transform(image=image)
             image = augmented['image']
         
-        return image, label
+        return image.to(device), label.to(device)
 
 # Mixup augmentation
 def mixup_data(x, y, alpha=0.2):
@@ -137,25 +135,25 @@ device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 print(f"Using device: {device}")
 
 def initialize_model():
-    model = efficientnet_v2_s(weights=EfficientNet_V2_S_Weights.IMAGENET1K_V1)
+    model = models.efficientnet_b0(weights=models.EfficientNet_B0_Weights.IMAGENET1K_V1)
     
     for param in model.parameters():
         param.requires_grad = False
     
     # Unfreeze more layers for fine-tuning
-    for param in model.features[-6:].parameters():
+    for param in model.features[-4:].parameters():
         param.requires_grad = True
     
     model.classifier = nn.Sequential(
         nn.Linear(in_features=1280, out_features=640),
         nn.ReLU(),
-        nn.Dropout(0.7),  # Increased dropout rate
+        nn.Dropout(0.6),  # Increased dropout rate
         nn.Linear(640, 320),
         nn.ReLU(),
-        nn.Dropout(0.7),  # Increased dropout rate
+        nn.Dropout(0.6),  # Increased dropout rate
         nn.Linear(320, 160),
         nn.ReLU(),
-        nn.Dropout(0.7),  # Increased dropout rate
+        nn.Dropout(0.6),  # Increased dropout rate
         nn.Linear(160, 2)
     )
     return model
@@ -199,7 +197,39 @@ save_augmented_samples(images, labels, transform=augment, model_name=model_name)
 # Ensure the model is moved to the GPU when initialized
 model = initialize_model().to(device)
 
-def train_model(model, train_loader, val_loader, criterion, optimizer, scheduler, fold, num_epochs=100, patience=15):
+class EarlyStopping:
+    def __init__(self, patience=7, verbose=False, delta=0):
+        self.patience = patience
+        self.verbose = verbose
+        self.counter = 0
+        self.best_score = None
+        self.early_stop = False
+        self.val_loss_min = np.Inf
+        self.delta = delta
+
+    def __call__(self, val_loss, model):
+        score = -val_loss
+        if self.best_score is None:
+            self.best_score = score
+            self.save_checkpoint(val_loss, model)
+        elif score < self.best_score + self.delta:
+            self.counter += 1
+            if self.verbose:
+                print(f'EarlyStopping counter: {self.counter} out of {self.patience}')
+            if self.counter >= self.patience:
+                self.early_stop = True
+        else:
+            self.best_score = score
+            self.save_checkpoint(val_loss, model)
+            self.counter = 0
+
+    def save_checkpoint(self, val_loss, model):
+        if self.verbose:
+            print(f'Validation loss decreased ({self.val_loss_min:.6f} --> {val_loss:.6f}). Saving model ...')
+        torch.save(model.state_dict(), 'checkpoint.pt')
+        self.val_loss_min = val_loss
+
+def train_model(model, train_loader, val_loader, criterion, optimizer, scheduler, fold, num_epochs=100, patience=10):
     best_val_loss = float('inf')
     early_stopping_counter = 0
     log = {
@@ -224,6 +254,10 @@ def train_model(model, train_loader, val_loader, criterion, optimizer, scheduler
         return torch.optim.lr_scheduler.LambdaLR(optimizer, f)
 
     warmup_scheduler = warmup_lr_scheduler(optimizer, warmup_iters, warmup_factor)
+
+    swa_model = AveragedModel(model)
+    swa_scheduler = SWALR(optimizer, swa_lr=1e-5)
+    swa_start = num_epochs // 2
 
     for epoch in range(num_epochs):
         model.train()
@@ -335,7 +369,11 @@ def train_model(model, train_loader, val_loader, criterion, optimizer, scheduler
         print(f"Train Balanced Accuracy: {train_bal_acc:.4f}, Val Balanced Accuracy: {val_bal_acc:.4f}")
         print(f"Train AUC: {train_auc:.4f}, Val AUC: {val_auc:.4f}")
         
-        scheduler.step()  # Move scheduler step here for CosineAnnealingLR
+        if epoch > swa_start:
+            swa_model.update_parameters(model)
+            swa_scheduler.step()
+        else:
+            scheduler.step(val_loss)
         
         if val_loss < best_val_loss:
             best_val_loss = val_loss
@@ -347,6 +385,10 @@ def train_model(model, train_loader, val_loader, criterion, optimizer, scheduler
             if early_stopping_counter >= patience:
                 print("Early stopping!")
                 break
+
+    # Use SWA model for final evaluation
+    torch.optim.swa_utils.update_bn(train_loader, swa_model.to(device))
+    model = swa_model.module
 
     # Save training log and plot curves
     with open(os.path.join(run_dir, f'training_log_fold_{fold}.json'), 'w') as f:
@@ -382,8 +424,77 @@ def plot_training_curves(log, fold):
     plt.savefig(os.path.join(run_dir, f'training_curves_fold_{fold}.png'))
     plt.close()
 
+def tta_predict(model, inputs, num_augmentations=5):
+    model.eval()
+    predictions = []
+    for _ in range(num_augmentations):
+        # Handle different input shapes
+        if inputs.dim() == 4:  # Batch of images
+            image = inputs[0].cpu().numpy()  # Take the first image in the batch
+        elif inputs.dim() == 3:  # Single image
+            image = inputs.cpu().numpy()
+        else:
+            raise ValueError(f"Unexpected input shape: {inputs.shape}")
+        
+        # Ensure the image is in the correct format for albumentations
+        if image.shape[0] == 3:  # If channels are first, transpose
+            image = image.transpose(1, 2, 0)
+        
+        augmented = val_transform(image=image)
+        augmented_inputs = augmented['image'].unsqueeze(0).to(device)
+        
+        with torch.no_grad():
+            outputs = model(augmented_inputs)
+        predictions.append(outputs)
+    return torch.mean(torch.stack(predictions), dim=0)
+
+# Use this in your evaluation loop
+def evaluate_model(model, val_loader):
+    model.eval()
+    val_predictions = []
+    val_true_labels = []
+    with torch.no_grad():
+        for inputs, labels in val_loader:
+            inputs, labels = inputs.to(device), labels.to(device)
+            outputs = torch.stack([tta_predict(model, input_) for input_ in inputs])
+            _, predicted = torch.max(outputs, 1)
+            val_predictions.extend(predicted.cpu().numpy())
+            val_true_labels.extend(labels.cpu().numpy())
+    return np.array(val_predictions), np.array(val_true_labels)
+
+def find_lr(model, train_loader, criterion, optimizer, init_value=1e-8, final_value=10., beta=0.98):
+    num = len(train_loader) - 1
+    mult = (final_value / init_value) ** (1/num)
+    lr = init_value
+    optimizer.param_groups[0]['lr'] = lr
+    avg_loss = 0.
+    best_loss = 0.
+    batch_num = 0
+    losses = []
+    log_lrs = []
+    for data in train_loader:
+        batch_num += 1
+        inputs, labels = data
+        inputs, labels = inputs.to(device), labels.to(device)
+        optimizer.zero_grad()
+        outputs = model(inputs)
+        loss = criterion(outputs, labels)
+        avg_loss = beta * avg_loss + (1-beta) * loss.item()
+        smoothed_loss = avg_loss / (1 - beta**batch_num)
+        if batch_num > 1 and smoothed_loss > 4 * best_loss:
+            return log_lrs, losses
+        if smoothed_loss < best_loss or batch_num == 1:
+            best_loss = smoothed_loss
+        losses.append(smoothed_loss)
+        log_lrs.append(math.log10(lr))
+        loss.backward()
+        optimizer.step()
+        lr *= mult
+        optimizer.param_groups[0]['lr'] = lr
+    return log_lrs, losses
+
 def main():
-    global images, labels  # Declare images and labels as global variables
+    global images, labels, device
     X_train, X_val, y_train, y_val = train_test_split(images, labels, test_size=0.2, random_state=42, stratify=labels)
 
     # Implement k-fold cross-validation
@@ -393,7 +504,7 @@ def main():
     fold_results = []
 
     # Calculate class weights
-    class_weights = torch.tensor([1.0, (y_train == 0).sum() / (y_train == 1).sum()], dtype=torch.float32).to(device)  # Ensure class_weights is Float
+    class_weights = torch.tensor([1.0, (y_train == 0).sum() / (y_train == 1).sum()], dtype=torch.float32).to(device)
 
     for fold, (train_idx, val_idx) in enumerate(kf.split(X_train), 1):
         print(f"Fold {fold}/{k_folds}")
@@ -411,23 +522,18 @@ def main():
         val_loader = DataLoader(val_dataset, batch_size=32, shuffle=False, num_workers=0)
 
         model = initialize_model().to(device)
-        criterion = nn.CrossEntropyLoss(weight=class_weights)  # Use CrossEntropyLoss with class weights
-        optimizer = torch.optim.AdamW(model.parameters(), lr=1e-3, weight_decay=1e-2)  # Increased weight decay
-        scheduler = CosineAnnealingLR(optimizer, T_max=50, eta_min=1e-6)
+        criterion = FocalLoss(class_weights=class_weights)
+        optimizer = torch.optim.AdamW(model.parameters(), lr=5e-5, weight_decay=1e-4)
+        scheduler = lr_scheduler.CosineAnnealingWarmRestarts(optimizer, T_0=10, T_mult=2)
 
-        model = train_model(model, train_loader, val_loader, criterion, optimizer, scheduler, fold, num_epochs=100, patience=15)  # Pass fold number
-        
+        model = train_model(model, train_loader, val_loader, criterion, optimizer, scheduler, fold, num_epochs=50, patience=10)
+
         # Evaluate the model on the validation set
-        model.eval()
-        val_predictions = []
-        val_true_labels = []
-        with torch.no_grad():
-            for inputs, labels in val_loader:
-                inputs, labels = inputs.to(device), labels.to(device)
-                outputs = model(inputs)
-                _, predicted = torch.max(outputs, 1)
-                val_predictions.extend(predicted.cpu().numpy())
-                val_true_labels.extend(labels.cpu().numpy())
+        val_predictions, val_true_labels = evaluate_model(model, val_loader)
+        
+        # Ensure both arrays are 1D and contain only integer labels
+        val_predictions = val_predictions.flatten().astype(int)
+        val_true_labels = val_true_labels.flatten().astype(int)
         
         fold_f1 = f1_score(val_true_labels, val_predictions, average='weighted')
         fold_results.append(fold_f1)
@@ -444,24 +550,11 @@ def main():
     val_loader = DataLoader(val_dataset, batch_size=32, shuffle=False, num_workers=0)
 
     model = initialize_model().to(device)
-    criterion = nn.CrossEntropyLoss(weight=class_weights)  # Use CrossEntropyLoss with class weights
-    optimizer = torch.optim.AdamW(model.parameters(), lr=1e-3, weight_decay=1e-2)  # Increased weight decay
-    scheduler = CosineAnnealingLR(optimizer, T_max=50, eta_min=1e-6)
+    criterion = FocalLoss(class_weights=class_weights)
+    optimizer = torch.optim.AdamW(model.parameters(), lr=5e-5, weight_decay=1e-4)
+    scheduler = lr_scheduler.CosineAnnealingWarmRestarts(optimizer, T_0=10, T_mult=2)
 
-    model = train_model(model, train_loader, val_loader, criterion, optimizer, scheduler, 'final', num_epochs=100, patience=15)  # Indicate final training
-
-    # Implement model ensembling
-    ensemble_models = []
-    for i in range(3):  # Train 3 models for ensembling
-        model = initialize_model().to(device)
-        optimizer = torch.optim.AdamW(model.parameters(), lr=1e-3, weight_decay=1e-2)
-        scheduler = CosineAnnealingLR(optimizer, T_max=50, eta_min=1e-6)
-        model = train_model(model, train_loader, val_loader, criterion, optimizer, scheduler, f'ensemble_{i}', num_epochs=100, patience=15)
-        ensemble_models.append(model)
-
-    # Save ensemble models
-    for i, model in enumerate(ensemble_models):
-        torch.save(model.state_dict(), os.path.join(run_dir, f'ensemble_model_{i}.pth'))
+    model = train_model(model, train_loader, val_loader, criterion, optimizer, scheduler, 'final', num_epochs=50, patience=10)
 
     print("Training completed")
     writer.close()
