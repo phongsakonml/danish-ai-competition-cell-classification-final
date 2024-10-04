@@ -23,7 +23,7 @@ from torch.nn.utils import clip_grad_norm_
 # Load the data
 data_dir = 'data/training_balanced'  # Use the balanced dataset
 labels_file = 'data/training_balanced.csv'
-model_name = "jesus"
+model_name = "moses"
 
 # Read labels
 labels_df = pd.read_csv(labels_file)

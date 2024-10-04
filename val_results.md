@@ -11,3 +11,4 @@ mark + marc, 0.62
 greed, 0.56
 tlow, 0.66
 tyler, 0.84
+jesus, 0.46
