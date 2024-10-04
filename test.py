@@ -1,12 +1,13 @@
 import pandas as pd
 import os
 import torch
-from model import predict
+from model import predict, MODEL_NAME  # Update this line to import MODEL_NAME
 import utils
 import cv2
 import numpy as np
 from tqdm import tqdm
 import matplotlib.pyplot as plt
+import json  # Add this import to handle JSON operations
 
 # Load the data
 labels_file = 'data/training.csv'
@@ -91,3 +92,25 @@ elif accuracy_1 < accuracy_0:
     print("\nThe model is struggling more with homogeneous (class 1) images.")
 else:
     print("\nThe model seems to perform equally on both classes.")
+
+# After printing results, save them to a JSON file
+results = {
+    "Total label 0 (heterogeneous)": n_0,
+    "Total label 1 (homogeneous)": n_1,
+    "Correct predictions for label 0": a_0,
+    "Correct predictions for label 1": a_1,
+    "Score": score,
+    "Accuracy for class 0 (heterogeneous)": accuracy_0,
+    "Accuracy for class 1 (homogeneous)": accuracy_1,
+    "Misclassified images": misclassified
+}
+
+# Create the local_test directory if it doesn't exist
+os.makedirs('local_test', exist_ok=True)
+
+# Save results to a JSON file  # Replace with your actual model name
+json_file_path = os.path.join('local_test', f"{MODEL_NAME}.json")
+with open(json_file_path, 'w') as json_file:
+    json.dump(results, json_file, indent=4)
+
+print(f"Results saved to {json_file_path}")
