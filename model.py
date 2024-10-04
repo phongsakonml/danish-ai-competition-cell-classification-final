@@ -8,7 +8,7 @@ import os
 import random
 import utils
 
-MODEL_NAME = 'tyler'
+MODEL_NAME = 'jesus'
 MODEL_PATH = f'runs/{MODEL_NAME}/best_model.pth'
 
 def get_efficientnet_b0(num_classes=2):
