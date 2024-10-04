@@ -22,7 +22,7 @@ from torch.nn import functional as F
 # Load the data
 data_dir = 'data/training_balanced'  # Use the balanced dataset
 labels_file = 'data/training_balanced.csv'
-model_name = "tlow"
+model_name = "tyler"
 
 # Read labels
 labels_df = pd.read_csv(labels_file)
@@ -67,6 +67,7 @@ augment = A.Compose([
     A.VerticalFlip(p=0.5),
     A.Rotate(limit=30, p=0.7),
     A.RandomBrightnessContrast(p=0.2),
+    A.GaussNoise(p=0.2),  # Added Gaussian noise for more variability
     A.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]),
     ToTensorV2()
 ])
@@ -144,13 +145,13 @@ def initialize_model():
     model.classifier = nn.Sequential(
         nn.Linear(in_features=1280, out_features=640),
         nn.ReLU(),
-        nn.Dropout(0.5),
+        nn.Dropout(0.6),  # Increased dropout rate
         nn.Linear(640, 320),
         nn.ReLU(),
-        nn.Dropout(0.5),
+        nn.Dropout(0.6),  # Increased dropout rate
         nn.Linear(320, 160),
         nn.ReLU(),
-        nn.Dropout(0.5),
+        nn.Dropout(0.6),  # Increased dropout rate
         nn.Linear(160, 2)
     )
     return model
@@ -194,7 +195,7 @@ save_augmented_samples(images, labels, transform=augment, model_name=model_name)
 # Ensure the model is moved to the GPU when initialized
 model = initialize_model().to(device)
 
-def train_model(model, train_loader, val_loader, criterion, optimizer, scheduler, num_epochs=50, patience=10):
+def train_model(model, train_loader, val_loader, criterion, optimizer, scheduler, fold, num_epochs=100, patience=10):
     best_val_loss = float('inf')
     early_stopping_counter = 0
     log = {
@@ -344,14 +345,17 @@ def train_model(model, train_loader, val_loader, criterion, optimizer, scheduler
                 break
 
     # Save training log and plot curves
-    with open(os.path.join(run_dir, f'training_log_{datetime.now().strftime("%Y%m%d_%H%M%S")}.json'), 'w') as f:
+    with open(os.path.join(run_dir, f'training_log_fold_{fold}.json'), 'w') as f:
         json.dump(log, f, indent=4)
 
-    plot_training_curves(log)
+    plot_training_curves(log, fold)
+
+    # Save the model for the current fold
+    torch.save(model.state_dict(), os.path.join(run_dir, f'model_fold_{fold}.pth'))
 
     return model
 
-def plot_training_curves(log):
+def plot_training_curves(log, fold):
     plt.figure(figsize=(15, 12))  # Adjusted figure size for better visibility
     
     metrics = [
@@ -367,11 +371,11 @@ def plot_training_curves(log):
         plt.plot(log['epochs'], log[f'val_{metric_key}'], label=f'Validation {metric_name}')
         plt.xlabel('Epochs')
         plt.ylabel(metric_name)
-        plt.title(f'Training and Validation {metric_name}')
+        plt.title(f'Training and Validation {metric_name} - Fold {fold}')
         plt.legend()
 
     plt.tight_layout()
-    plt.savefig(os.path.join(run_dir, f'training_curves_{datetime.now().strftime("%Y%m%d_%H%M%S")}.png'))
+    plt.savefig(os.path.join(run_dir, f'training_curves_fold_{fold}.png'))
     plt.close()
 
 def main():
@@ -404,10 +408,10 @@ def main():
 
         model = initialize_model().to(device)
         criterion = FocalLoss(class_weights=class_weights)  # Use Focal Loss with class weights
-        optimizer = torch.optim.AdamW(model.parameters(), lr=1e-3, weight_decay=1e-2)  # Use AdamW optimizer
+        optimizer = torch.optim.AdamW(model.parameters(), lr=1e-4, weight_decay=1e-3)  # Reduced learning rate and increased weight decay
         scheduler = lr_scheduler.ReduceLROnPlateau(optimizer, mode='min', patience=5, factor=0.5)
 
-        model = train_model(model, train_loader, val_loader, criterion, optimizer, scheduler)
+        model = train_model(model, train_loader, val_loader, criterion, optimizer, scheduler, fold, num_epochs=50, patience=10)  # Pass fold number
         
         # Evaluate the model on the validation set
         model.eval()
@@ -437,10 +441,10 @@ def main():
 
     model = initialize_model().to(device)
     criterion = FocalLoss(class_weights=class_weights)  # Use Focal Loss with class weights
-    optimizer = torch.optim.AdamW(model.parameters(), lr=1e-3, weight_decay=1e-2)  # Use AdamW optimizer
+    optimizer = torch.optim.AdamW(model.parameters(), lr=1e-4, weight_decay=1e-3)  # Reduced learning rate and increased weight decay
     scheduler = lr_scheduler.ReduceLROnPlateau(optimizer, mode='min', patience=5, factor=0.5)
 
-    model = train_model(model, train_loader, val_loader, criterion, optimizer, scheduler)
+    model = train_model(model, train_loader, val_loader, criterion, optimizer, scheduler, 'final', num_epochs=50, patience=10)  # Indicate final training
 
     print("Training completed")
     writer.close()
