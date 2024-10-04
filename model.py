@@ -7,37 +7,36 @@ import base64
 import os
 import random
 import utils
-from torchvision.models import efficientnet_v2_s, EfficientNet_V2_S_Weights
 
-MODEL_NAME = 'maria'
+MODEL_NAME = 'napoleon'
 MODEL_PATH = f'runs/{MODEL_NAME}/best_model.pth'
 
-def get_efficientnet_v2_s(num_classes=2):
-    model = efficientnet_v2_s(weights=EfficientNet_V2_S_Weights.IMAGENET1K_V1)
+def initialize_model():
+    model = models.efficientnet_b0(weights=models.EfficientNet_B0_Weights.IMAGENET1K_V1)
     
     for param in model.parameters():
         param.requires_grad = False
     
     # Unfreeze more layers for fine-tuning
-    for param in model.features[-6:].parameters():
+    for param in model.features[-4:].parameters():
         param.requires_grad = True
     
     model.classifier = nn.Sequential(
         nn.Linear(in_features=1280, out_features=640),
         nn.ReLU(),
-        nn.Dropout(0.7),
+        nn.Dropout(0.6),
         nn.Linear(640, 320),
         nn.ReLU(),
-        nn.Dropout(0.7),
+        nn.Dropout(0.6),
         nn.Linear(320, 160),
         nn.ReLU(),
-        nn.Dropout(0.7),
-        nn.Linear(160, num_classes)
+        nn.Dropout(0.6),
+        nn.Linear(160, 2)
     )
     return model
 
 # Load the trained model from the specified path
-model = get_efficientnet_v2_s(num_classes=2)
+model = initialize_model()
 model.load_state_dict(torch.load(MODEL_PATH, map_location=torch.device('cpu')))
 model.eval()
 
@@ -58,8 +57,9 @@ def predict(image: str) -> int:
         img_tensor = transform(image).unsqueeze(0)
         with torch.no_grad():
             output = model(img_tensor)
-            _, predicted = torch.max(output, 1)
-            return predicted.item() 
+            probabilities = torch.softmax(output, dim=1)
+            _, predicted = torch.max(probabilities, 1)
+            return int(predicted.item())  # Ensure we return a single integer
     except Exception as e:
         print(f"Error in predict function: {str(e)}")
         return -1
