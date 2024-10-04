@@ -8,35 +8,27 @@ import os
 import random
 import utils
 
-MODEL_NAME = 'napoleon'
+MODEL_NAME = 'lucifer'
 MODEL_PATH = f'runs/{MODEL_NAME}/best_model.pth'
 
-def initialize_model():
-    model = models.efficientnet_b0(weights=models.EfficientNet_B0_Weights.IMAGENET1K_V1)
-    
-    for param in model.parameters():
-        param.requires_grad = False
-    
-    # Unfreeze more layers for fine-tuning
-    for param in model.features[-4:].parameters():
-        param.requires_grad = True
-    
+def get_efficientnet_b3(num_classes=2):  # Change to EfficientNet-B3
+    model = models.efficientnet_b3(weights=models.EfficientNet_B3_Weights.IMAGENET1K_V1)  # Use EfficientNet-B3
     model.classifier = nn.Sequential(
-        nn.Linear(in_features=1280, out_features=640),
+        nn.Linear(in_features=1536, out_features=640),  # Adjusted in_features for EfficientNet-B3
         nn.ReLU(),
-        nn.Dropout(0.6),
+        nn.Dropout(0.7),  # Increased dropout rate
         nn.Linear(640, 320),
         nn.ReLU(),
-        nn.Dropout(0.6),
+        nn.Dropout(0.7),  # Increased dropout rate
         nn.Linear(320, 160),
         nn.ReLU(),
-        nn.Dropout(0.6),
-        nn.Linear(160, 2)
+        nn.Dropout(0.7),  # Increased dropout rate
+        nn.Linear(160, num_classes)  # Ensure num_classes matches the saved model
     )
     return model
 
 # Load the trained model from the specified path
-model = initialize_model()
+model = get_efficientnet_b3(num_classes=2)  # Ensure num_classes matches the saved model
 model.load_state_dict(torch.load(MODEL_PATH, map_location=torch.device('cpu')))
 model.eval()
 
@@ -57,9 +49,8 @@ def predict(image: str) -> int:
         img_tensor = transform(image).unsqueeze(0)
         with torch.no_grad():
             output = model(img_tensor)
-            probabilities = torch.softmax(output, dim=1)
-            _, predicted = torch.max(probabilities, 1)
-            return int(predicted.item())  # Ensure we return a single integer
+            _, predicted = torch.max(output, 1)
+            return predicted.item() 
     except Exception as e:
         print(f"Error in predict function: {str(e)}")
         return -1
