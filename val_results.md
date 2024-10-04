@@ -13,4 +13,4 @@ tlow, 0.66
 tyler, 0.84
 jesus, 0.46
 napoleon, 0.75
-lucifer,
+lucifer, 0.75

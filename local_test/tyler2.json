@@ -1,0 +1,51 @@
+{
+    "Total label 0 (heterogeneous)": 76,
+    "Total label 1 (homogeneous)": 14,
+    "Correct predictions for label 0": 70,
+    "Correct predictions for label 1": 12,
+    "Score": 0.7894736842105263,
+    "Accuracy for class 0 (heterogeneous)": 0.9210526315789473,
+    "Accuracy for class 1 (homogeneous)": 0.8571428571428571,
+    "Misclassified images": [
+        [
+            "261",
+            0,
+            1
+        ],
+        [
+            "257",
+            0,
+            1
+        ],
+        [
+            "251",
+            0,
+            1
+        ],
+        [
+            "231",
+            1,
+            0
+        ],
+        [
+            "211",
+            1,
+            0
+        ],
+        [
+            "209",
+            0,
+            1
+        ],
+        [
+            "119",
+            0,
+            1
+        ],
+        [
+            "109",
+            0,
+            1
+        ]
+    ]
+}
