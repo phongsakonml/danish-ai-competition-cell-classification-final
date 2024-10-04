@@ -18,12 +18,13 @@ import albumentations as A
 from albumentations.pytorch import ToTensorV2
 from torch.cuda.amp import GradScaler, autocast
 from torch.nn import functional as F
-from torch.nn.utils import clip_grad_norm_
+from torch.optim.lr_scheduler import CosineAnnealingLR
+from torchvision.models import efficientnet_v2_s, EfficientNet_V2_S_Weights
 
 # Load the data
 data_dir = 'data/training_balanced'  # Use the balanced dataset
 labels_file = 'data/training_balanced.csv'
-model_name = "moses"
+model_name = "maria"
 
 # Read labels
 labels_df = pd.read_csv(labels_file)
@@ -66,10 +67,11 @@ augment = A.Compose([
     A.Resize(224, 224),
     A.HorizontalFlip(p=0.5),
     A.VerticalFlip(p=0.5),
-    A.Rotate(limit=15, p=0.7),  # Reduced rotation limit
-    A.RandomBrightnessContrast(brightness_limit=0.1, contrast_limit=0.1, p=0.2),  # Reduced intensity
-    A.GaussNoise(var_limit=(10.0, 50.0), p=0.2),  # Adjusted noise levels
-    A.ShiftScaleRotate(shift_limit=0.05, scale_limit=0.05, rotate_limit=15, p=0.5),  # Reduced limits
+    A.RandomRotate90(p=0.5),
+    A.ShiftScaleRotate(shift_limit=0.1, scale_limit=0.1, rotate_limit=45, p=0.5),
+    A.RandomBrightnessContrast(brightness_limit=0.2, contrast_limit=0.2, p=0.5),
+    A.GaussNoise(var_limit=(10.0, 50.0), p=0.5),
+    A.CoarseDropout(max_holes=8, max_height=8, max_width=8, p=0.5),
     A.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]),
     ToTensorV2()
 ])
@@ -135,25 +137,25 @@ device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 print(f"Using device: {device}")
 
 def initialize_model():
-    model = models.efficientnet_b0(weights=models.EfficientNet_B0_Weights.IMAGENET1K_V1)
+    model = efficientnet_v2_s(weights=EfficientNet_V2_S_Weights.IMAGENET1K_V1)
     
     for param in model.parameters():
         param.requires_grad = False
     
     # Unfreeze more layers for fine-tuning
-    for param in model.features[-4:].parameters():
+    for param in model.features[-6:].parameters():
         param.requires_grad = True
     
     model.classifier = nn.Sequential(
         nn.Linear(in_features=1280, out_features=640),
         nn.ReLU(),
-        nn.Dropout(0.8),  # Increased dropout rate
+        nn.Dropout(0.7),  # Increased dropout rate
         nn.Linear(640, 320),
         nn.ReLU(),
-        nn.Dropout(0.8),  # Increased dropout rate
+        nn.Dropout(0.7),  # Increased dropout rate
         nn.Linear(320, 160),
         nn.ReLU(),
-        nn.Dropout(0.8),  # Increased dropout rate
+        nn.Dropout(0.7),  # Increased dropout rate
         nn.Linear(160, 2)
     )
     return model
@@ -197,7 +199,7 @@ save_augmented_samples(images, labels, transform=augment, model_name=model_name)
 # Ensure the model is moved to the GPU when initialized
 model = initialize_model().to(device)
 
-def train_model(model, train_loader, val_loader, criterion, optimizer, scheduler, fold, num_epochs=100, patience=10):
+def train_model(model, train_loader, val_loader, criterion, optimizer, scheduler, fold, num_epochs=100, patience=15):
     best_val_loss = float('inf')
     early_stopping_counter = 0
     log = {
@@ -242,10 +244,6 @@ def train_model(model, train_loader, val_loader, criterion, optimizer, scheduler
                 loss = mixup_criterion(criterion, outputs, targets_a, targets_b, lam)
             
             scaler.scale(loss).backward()
-            
-            # Add gradient clipping
-            clip_grad_norm_(model.parameters(), max_norm=1.0)
-            
             scaler.step(optimizer)
             scaler.update()
             
@@ -337,56 +335,52 @@ def train_model(model, train_loader, val_loader, criterion, optimizer, scheduler
         print(f"Train Balanced Accuracy: {train_bal_acc:.4f}, Val Balanced Accuracy: {val_bal_acc:.4f}")
         print(f"Train AUC: {train_auc:.4f}, Val AUC: {val_auc:.4f}")
         
+        scheduler.step()  # Move scheduler step here for CosineAnnealingLR
+        
         if val_loss < best_val_loss:
             best_val_loss = val_loss
-            best_model_state = model.state_dict()
+            torch.save(model.state_dict(), os.path.join(run_dir, 'best_model.pth'))
+            print("New best model saved!")
             early_stopping_counter = 0
-            print(f"New best model found at epoch {epoch+1}")
         else:
             early_stopping_counter += 1
-            print(f"No improvement for {early_stopping_counter} epochs")
             if early_stopping_counter >= patience:
-                print(f"Early stopping! No improvement for {patience} epochs.")
+                print("Early stopping!")
                 break
 
-        scheduler.step()  # Step the scheduler after each epoch
+    # Save training log and plot curves
+    with open(os.path.join(run_dir, f'training_log_fold_{fold}.json'), 'w') as f:
+        json.dump(log, f, indent=4)
 
-    print(f"Training stopped at epoch {epoch+1}")
+    plot_training_curves(log, fold)
 
-    # Load the best model state
-    model.load_state_dict(best_model_state)
+    # Save the model for the current fold
+    torch.save(model.state_dict(), os.path.join(run_dir, f'model_fold_{fold}.pth'))
 
-    return model, log  # Return both the model and the log
+    return model
 
-def plot_training_curves(log, model_name):
-    plt.figure(figsize=(15, 12))
+def plot_training_curves(log, fold):
+    plt.figure(figsize=(15, 12))  # Adjusted figure size for better visibility
     
     metrics = [
         ('Loss', 'losses'), ('Accuracy', 'accuracies'),
         ('F1 Score', 'f1'), ('Precision', 'precision'),
         ('Recall', 'recall'), ('Balanced Accuracy', 'bal_acc'),
-        ('AUC', 'auc')
+        ('AUC', 'auc')  # Added AUC to the metrics
     ]
     
     for i, (metric_name, metric_key) in enumerate(metrics, 1):
-        plt.subplot(4, 2, i)
+        plt.subplot(4, 2, i)  # Adjusted subplot grid for AUC
         plt.plot(log['epochs'], log[f'train_{metric_key}'], label=f'Train {metric_name}')
         plt.plot(log['epochs'], log[f'val_{metric_key}'], label=f'Validation {metric_name}')
         plt.xlabel('Epochs')
         plt.ylabel(metric_name)
-        plt.title(f'Training and Validation {metric_name}')
+        plt.title(f'Training and Validation {metric_name} - Fold {fold}')
         plt.legend()
 
     plt.tight_layout()
-    plt.savefig(os.path.join(run_dir, f'{model_name}_training_curves.png'))
+    plt.savefig(os.path.join(run_dir, f'training_curves_fold_{fold}.png'))
     plt.close()
-
-def calculate_challenge_score(y_true, y_pred):
-    n0 = (y_true == 0).sum()
-    n1 = (y_true == 1).sum()
-    a0 = ((y_true == 0) & (y_pred == 0)).sum()
-    a1 = ((y_true == 1) & (y_pred == 1)).sum()
-    return (a0 * a1) / (n0 * n1)
 
 def main():
     global images, labels  # Declare images and labels as global variables
@@ -397,12 +391,9 @@ def main():
     kf = KFold(n_splits=k_folds, shuffle=True, random_state=42)
     
     fold_results = []
-    best_fold_score = 0
-    best_fold_model = None
-    best_fold_log = None
 
     # Calculate class weights
-    class_weights = torch.tensor([1.0, (y_train == 0).sum() / (y_train == 1).sum()], dtype=torch.float32).to(device)
+    class_weights = torch.tensor([1.0, (y_train == 0).sum() / (y_train == 1).sum()], dtype=torch.float32).to(device)  # Ensure class_weights is Float
 
     for fold, (train_idx, val_idx) in enumerate(kf.split(X_train), 1):
         print(f"Fold {fold}/{k_folds}")
@@ -420,11 +411,11 @@ def main():
         val_loader = DataLoader(val_dataset, batch_size=32, shuffle=False, num_workers=0)
 
         model = initialize_model().to(device)
-        criterion = FocalLoss(class_weights=class_weights)
-        optimizer = torch.optim.AdamW(model.parameters(), lr=1e-4, weight_decay=5e-2)  # Increased weight decay
-        scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=100, eta_min=1e-6)
+        criterion = nn.CrossEntropyLoss(weight=class_weights)  # Use CrossEntropyLoss with class weights
+        optimizer = torch.optim.AdamW(model.parameters(), lr=1e-3, weight_decay=1e-2)  # Increased weight decay
+        scheduler = CosineAnnealingLR(optimizer, T_max=50, eta_min=1e-6)
 
-        model, fold_log = train_model(model, train_loader, val_loader, criterion, optimizer, scheduler, fold, num_epochs=100, patience=10)
+        model = train_model(model, train_loader, val_loader, criterion, optimizer, scheduler, fold, num_epochs=100, patience=15)  # Pass fold number
         
         # Evaluate the model on the validation set
         model.eval()
@@ -438,28 +429,12 @@ def main():
                 val_predictions.extend(predicted.cpu().numpy())
                 val_true_labels.extend(labels.cpu().numpy())
         
-        fold_score = calculate_challenge_score(np.array(val_true_labels), np.array(val_predictions))
-        fold_results.append(fold_score)
-        print(f"Fold {fold} Challenge Score: {fold_score:.4f}")
-
-        # Save the best model based on the challenge score
-        if fold_score > best_fold_score:
-            best_fold_score = fold_score
-            best_fold_model = model.state_dict()
-            best_fold_log = fold_log
-            torch.save(best_fold_model, os.path.join(run_dir, 'best_cross_val_model.pth'))
-            print(f"New best cross-validation model (Score: {best_fold_score:.4f}) saved")
+        fold_f1 = f1_score(val_true_labels, val_predictions, average='weighted')
+        fold_results.append(fold_f1)
+        print(f"Fold {fold} F1 Score: {fold_f1:.4f}")
 
     print(f"Cross-validation results: {fold_results}")
-    print(f"Mean Challenge Score: {np.mean(fold_results):.4f} (+/- {np.std(fold_results):.4f})")
-    print(f"Best cross-validation Challenge Score: {best_fold_score:.4f}")
-
-    # Plot and save the curves for the best cross-validation model
-    plot_training_curves(best_fold_log, 'best_cross_val')
-    
-    # Save the log for the best cross-validation model
-    with open(os.path.join(run_dir, 'best_cross_val_log.json'), 'w') as f:
-        json.dump(best_fold_log, f, indent=4)
+    print(f"Mean F1 Score: {np.mean(fold_results):.4f} (+/- {np.std(fold_results):.4f})")
 
     # Train on the entire training set
     train_dataset = CellDataset(X_train, y_train, transform=augment)
@@ -469,58 +444,30 @@ def main():
     val_loader = DataLoader(val_dataset, batch_size=32, shuffle=False, num_workers=0)
 
     model = initialize_model().to(device)
-    criterion = FocalLoss(class_weights=class_weights)
-    optimizer = torch.optim.AdamW(model.parameters(), lr=1e-4, weight_decay=5e-2)  # Increased weight decay
-    scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=100, eta_min=1e-6)
+    criterion = nn.CrossEntropyLoss(weight=class_weights)  # Use CrossEntropyLoss with class weights
+    optimizer = torch.optim.AdamW(model.parameters(), lr=1e-3, weight_decay=1e-2)  # Increased weight decay
+    scheduler = CosineAnnealingLR(optimizer, T_max=50, eta_min=1e-6)
 
-    model, final_log = train_model(model, train_loader, val_loader, criterion, optimizer, scheduler, 'final', num_epochs=100, patience=10)
+    model = train_model(model, train_loader, val_loader, criterion, optimizer, scheduler, 'final', num_epochs=100, patience=15)  # Indicate final training
+
+    # Implement model ensembling
+    ensemble_models = []
+    for i in range(3):  # Train 3 models for ensembling
+        model = initialize_model().to(device)
+        optimizer = torch.optim.AdamW(model.parameters(), lr=1e-3, weight_decay=1e-2)
+        scheduler = CosineAnnealingLR(optimizer, T_max=50, eta_min=1e-6)
+        model = train_model(model, train_loader, val_loader, criterion, optimizer, scheduler, f'ensemble_{i}', num_epochs=100, patience=15)
+        ensemble_models.append(model)
+
+    # Save ensemble models
+    for i, model in enumerate(ensemble_models):
+        torch.save(model.state_dict(), os.path.join(run_dir, f'ensemble_model_{i}.pth'))
 
     print("Training completed")
     writer.close()
 
-    # Save the final model trained on all data
     torch.save(model.state_dict(), os.path.join(run_dir, 'final_model.pth'))
     print(f"Final model saved in {run_dir}")
-
-    # Plot and save the curves for the final model
-    plot_training_curves(final_log, 'final')
-    
-    # Save the log for the final model
-    with open(os.path.join(run_dir, 'final_model_log.json'), 'w') as f:
-        json.dump(final_log, f, indent=4)
-
-    # Evaluate both models on the validation set
-    best_cv_model = initialize_model().to(device)
-    best_cv_model.load_state_dict(torch.load(os.path.join(run_dir, 'best_cross_val_model.pth')))
-    
-    final_model = model  # This is already the final model trained on all data
-
-    for model_name, eval_model in [("Best Cross-Validation", best_cv_model), ("Final", final_model)]:
-        eval_model.eval()
-        val_predictions = []
-        val_true_labels = []
-        with torch.no_grad():
-            for inputs, labels in val_loader:
-                inputs, labels = inputs.to(device), labels.to(device)
-                outputs = eval_model(inputs)
-                _, predicted = torch.max(outputs, 1)
-                val_predictions.extend(predicted.cpu().numpy())
-                val_true_labels.extend(labels.cpu().numpy())
-        
-        val_score = calculate_challenge_score(np.array(val_true_labels), np.array(val_predictions))
-        print(f"{model_name} Model - Validation Challenge Score: {val_score:.4f}")
-
-    # Choose the best model based on the validation challenge score
-    if calculate_challenge_score(np.array(val_true_labels), np.array(val_predictions)) > best_fold_score:
-        best_model = final_model
-        print("Final model selected as the best model.")
-    else:
-        best_model = best_cv_model
-        print("Best cross-validation model selected as the best model.")
-
-    # Save the best model
-    torch.save(best_model.state_dict(), os.path.join(run_dir, 'best_model.pth'))
-    print(f"Best model saved in {run_dir}")
 
 if __name__ == '__main__':
     main()
