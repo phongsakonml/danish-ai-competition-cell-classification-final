@@ -17,11 +17,12 @@ from torch.utils.data import DataLoader, Dataset
 import albumentations as A
 from albumentations.pytorch import ToTensorV2
 from torch.cuda.amp import GradScaler, autocast
+from torch.nn import functional as F
 
 # Load the data
 data_dir = 'data/training_balanced'  # Use the balanced dataset
 labels_file = 'data/training_balanced.csv'
-model_name = "marc"
+model_name = "tlow"
 
 # Read labels
 labels_df = pd.read_csv(labels_file)
@@ -79,7 +80,7 @@ val_transform = A.Compose([
 class CellDataset(Dataset):
     def __init__(self, images, labels, transform=None):
         self.images = images
-        self.labels = labels
+        self.labels = torch.tensor(labels, dtype=torch.long)  # Ensure labels are long tensors
         self.transform = transform
 
     def __len__(self):
@@ -95,6 +96,37 @@ class CellDataset(Dataset):
         
         return image, label
 
+# Mixup augmentation
+def mixup_data(x, y, alpha=0.2):
+    if alpha > 0:
+        lam = np.random.beta(alpha, alpha)
+    else:
+        lam = 1
+
+    batch_size = x.size()[0]
+    index = torch.randperm(batch_size).to(x.device)
+
+    mixed_x = lam * x + (1 - lam) * x[index, :]
+    y_a, y_b = y, y[index]
+    return mixed_x, y_a, y_b, lam
+
+def mixup_criterion(criterion, pred, y_a, y_b, lam):
+    return lam * criterion(pred, y_a) + (1 - lam) * criterion(pred, y_b)
+
+# Update FocalLoss to accept class weights
+class FocalLoss(nn.Module):
+    def __init__(self, alpha=0.25, gamma=2, class_weights=None):
+        super(FocalLoss, self).__init__()
+        self.alpha = alpha
+        self.gamma = gamma
+        self.class_weights = class_weights.float() if class_weights is not None else None  # Ensure class_weights is Float
+
+    def forward(self, inputs, targets):
+        BCE_loss = F.cross_entropy(inputs, targets, reduction='none', weight=self.class_weights)
+        pt = torch.exp(-BCE_loss)
+        F_loss = self.alpha * (1-pt)**self.gamma * BCE_loss
+        return F_loss.mean()
+
 # Model Selection: Transfer Learning with EfficientNet-B0
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 print(f"Using device: {device}")
@@ -106,17 +138,20 @@ def initialize_model():
         param.requires_grad = False
     
     # Unfreeze more layers for fine-tuning
-    for param in model.features[-3:].parameters():
+    for param in model.features[-4:].parameters():
         param.requires_grad = True
     
     model.classifier = nn.Sequential(
         nn.Linear(in_features=1280, out_features=640),
         nn.ReLU(),
-        nn.Dropout(0.4),
+        nn.Dropout(0.5),
         nn.Linear(640, 320),
         nn.ReLU(),
-        nn.Dropout(0.4),
-        nn.Linear(320, 2)
+        nn.Dropout(0.5),
+        nn.Linear(320, 160),
+        nn.ReLU(),
+        nn.Dropout(0.5),
+        nn.Linear(160, 2)
     )
     return model
 
@@ -169,7 +204,22 @@ def train_model(model, train_loader, val_loader, criterion, optimizer, scheduler
         'train_auc': [], 'val_auc': []  # Added AUC metrics
     }
 
-    scaler = GradScaler()  # Initialize the gradient scaler for mixed precision
+    scaler = GradScaler()  # No need to pass 'cuda' argument
+    # Learning rate warmup
+    warmup_factor = 1.0 / 1000
+    warmup_iters = min(1000, len(train_loader) - 1)
+
+    def warmup_lr_scheduler(optimizer, warmup_iters, warmup_factor):
+        def f(x):
+            if x >= warmup_iters:
+                return 1
+            alpha = float(x) / warmup_iters
+            return warmup_factor * (1 - alpha) + alpha
+
+        return torch.optim.lr_scheduler.LambdaLR(optimizer, f)
+
+    warmup_scheduler = warmup_lr_scheduler(optimizer, warmup_iters, warmup_factor)
+
     for epoch in range(num_epochs):
         model.train()
         train_loss = 0.0
@@ -177,19 +227,27 @@ def train_model(model, train_loader, val_loader, criterion, optimizer, scheduler
         train_predictions = []
         train_true_labels = []
         
-        for inputs, labels in tqdm(train_loader, desc=f"Epoch {epoch+1}/{num_epochs}", leave=False):
+        for i, (inputs, labels) in enumerate(tqdm(train_loader, desc=f"Epoch {epoch+1}/{num_epochs}", leave=False)):
             inputs, labels = inputs.to(device), labels.to(device)
+            
+            # Mixup augmentation
+            inputs, targets_a, targets_b, lam = mixup_data(inputs, labels)
+            
             optimizer.zero_grad()
-            with autocast():  # Enable mixed precision
+            with torch.amp.autocast(device_type='cuda'):  # Specify device_type
                 outputs = model(inputs)
-                loss = criterion(outputs, labels)
-            scaler.scale(loss).backward()  # Scale the loss for backpropagation
-            scaler.step(optimizer)  # Update the weights
-            scaler.update()  # Update the scaler
+                loss = mixup_criterion(criterion, outputs, targets_a, targets_b, lam)
+            
+            scaler.scale(loss).backward()
+            scaler.step(optimizer)
+            scaler.update()
+            
+            if epoch == 0 and i < warmup_iters:
+                warmup_scheduler.step()
             
             train_loss += loss.item() * inputs.size(0)
             _, predicted = torch.max(outputs, 1)
-            train_correct += (predicted == labels).sum().item()
+            train_correct += (lam * (predicted == targets_a).float() + (1 - lam) * (predicted == targets_b).float()).sum().item()
             train_predictions.extend(predicted.cpu().numpy())
             train_true_labels.extend(labels.cpu().numpy())
         
@@ -326,6 +384,9 @@ def main():
     
     fold_results = []
 
+    # Calculate class weights
+    class_weights = torch.tensor([1.0, (y_train == 0).sum() / (y_train == 1).sum()], dtype=torch.float32).to(device)  # Ensure class_weights is Float
+
     for fold, (train_idx, val_idx) in enumerate(kf.split(X_train), 1):
         print(f"Fold {fold}/{k_folds}")
         
@@ -342,8 +403,8 @@ def main():
         val_loader = DataLoader(val_dataset, batch_size=32, shuffle=False, num_workers=0)
 
         model = initialize_model().to(device)
-        criterion = nn.CrossEntropyLoss()
-        optimizer = torch.optim.Adam(model.parameters(), lr=1e-3, weight_decay=1e-5)  # Added weight decay
+        criterion = FocalLoss(class_weights=class_weights)  # Use Focal Loss with class weights
+        optimizer = torch.optim.AdamW(model.parameters(), lr=1e-3, weight_decay=1e-2)  # Use AdamW optimizer
         scheduler = lr_scheduler.ReduceLROnPlateau(optimizer, mode='min', patience=5, factor=0.5)
 
         model = train_model(model, train_loader, val_loader, criterion, optimizer, scheduler)
@@ -375,8 +436,8 @@ def main():
     val_loader = DataLoader(val_dataset, batch_size=32, shuffle=False, num_workers=0)
 
     model = initialize_model().to(device)
-    criterion = nn.CrossEntropyLoss()
-    optimizer = torch.optim.Adam(model.parameters(), lr=1e-3, weight_decay=1e-5)
+    criterion = FocalLoss(class_weights=class_weights)  # Use Focal Loss with class weights
+    optimizer = torch.optim.AdamW(model.parameters(), lr=1e-3, weight_decay=1e-2)  # Use AdamW optimizer
     scheduler = lr_scheduler.ReduceLROnPlateau(optimizer, mode='min', patience=5, factor=0.5)
 
     model = train_model(model, train_loader, val_loader, criterion, optimizer, scheduler)
