@@ -1,0 +1,26 @@
+{
+    "Model": "mark+marc",
+    "Model weights": {
+        "Marc": 0.414,
+        "Mark": 0.5855
+    },
+    "Total label 0 (heterogeneous)": 76,
+    "Total label 1 (homogeneous)": 14,
+    "Correct predictions for label 0": 76,
+    "Correct predictions for label 1": 12,
+    "Score": 0.8571428571428571,
+    "Accuracy for class 0 (heterogeneous)": 1.0,
+    "Accuracy for class 1 (homogeneous)": 0.8571428571428571,
+    "Misclassified images": [
+        [
+            "231",
+            1,
+            0
+        ],
+        [
+            "211",
+            1,
+            0
+        ]
+    ]
+}
